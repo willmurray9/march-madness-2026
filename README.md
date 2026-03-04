@@ -37,6 +37,7 @@ make features
 make train
 make validate
 make submit
+make observe
 ```
 
 4. Find outputs in:
@@ -44,6 +45,26 @@ make submit
 - `artifacts/models/`
 - `artifacts/reports/`
 - `artifacts/submissions/`
+
+## Observability Dashboard
+
+Build/update observability artifacts:
+
+```bash
+make observe
+```
+
+Launch the dashboard:
+
+```bash
+make dashboard
+```
+
+The dashboard reads:
+
+- `artifacts/reports/observability_latest.json`
+- `artifacts/reports/runs_index.csv`
+- per-gender train reports and latest submission manifest
 
 ## Modeling Approach
 
