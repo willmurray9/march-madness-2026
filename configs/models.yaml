@@ -1,0 +1,23 @@
+seed: 42
+
+base_models:
+  logistic_regression:
+    C: 0.5
+    max_iter: 2000
+  hist_gradient_boosting:
+    learning_rate: 0.05
+    max_depth: 6
+    max_iter: 300
+    min_samples_leaf: 20
+  elo:
+    scale: 400.0
+
+stacking:
+  use_meta_model: true
+  regularization_C: 0.5
+
+calibration:
+  candidates:
+    - none
+    - platt
+    - isotonic

@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+
+# Data and artifacts
+artifacts/
+data/
+!data/.gitkeep
+
+# OS/IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Logs
+*.log

@@ -1,0 +1,22 @@
+rolling_windows:
+  short: 5
+  mid: 10
+  long: 20
+
+elo:
+  base_rating: 1500.0
+  k_factor: 20.0
+  home_advantage: 60.0
+
+columns:
+  core_stats:
+    - points_for
+    - points_against
+    - poss
+    - off_eff
+    - def_eff
+    - net_eff
+    - rebound_rate
+    - turnover_rate
+    - ft_rate
+    - three_rate

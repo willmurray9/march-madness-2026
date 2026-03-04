@@ -1,0 +1,11 @@
+seed: 42
+holdout_seasons:
+  - 2021
+  - 2022
+  - 2023
+  - 2024
+  - 2025
+
+promotion_gates:
+  max_worst_season_regression: 0.02
+  required_mean_improvement: 0.0
