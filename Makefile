@@ -1,4 +1,4 @@
-PYTHON ?= python3
+PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 PYTHONPATH := src
 
 .PHONY: data features train validate submit observe dashboard all test
@@ -22,7 +22,7 @@ observe:
 	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m mm2026.cli observe
 
 dashboard:
-	PYTHONPATH=$(PYTHONPATH) streamlit run src/mm2026/observability/app.py
+	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m streamlit run src/mm2026/observability/app.py
 
 all: data features train validate submit observe
 
