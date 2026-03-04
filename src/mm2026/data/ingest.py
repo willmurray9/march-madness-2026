@@ -66,6 +66,12 @@ def run() -> None:
         tourney_df = read_csv(tourney_compact_path)
         write_csv(tourney_df, curated_dir / f"{gender}_tourney_compact.csv")
 
+        seeds_df = read_csv(raw_dir / f"{gender}NCAATourneySeeds.csv")
+        write_csv(seeds_df, curated_dir / f"{gender}_tourney_seeds.csv")
+
+        seasons_df = read_csv(raw_dir / f"{gender}Seasons.csv")
+        write_csv(seasons_df, curated_dir / f"{gender}_seasons.csv")
+
     sample_stage1 = read_csv(raw_dir / "SampleSubmissionStage1.csv")
     if not sample_stage1.empty:
         write_csv(sample_stage1, curated_dir / "SampleSubmissionStage1.csv")

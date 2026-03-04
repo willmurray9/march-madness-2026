@@ -31,8 +31,13 @@ def run() -> None:
         champion = []
         regressions = []
         for season, vals in season_metrics.items():
-            base_brier = float(vals["brier_blend_equal"])
-            champ_brier = float(vals.get("brier_meta_calibrated", report["oof_brier_meta_calibrated"]))
+            base_brier = float(vals.get("brier_blend_tuned", vals.get("brier_blend_equal")))
+            champ_brier = float(
+                vals.get(
+                    "brier_champion_calibrated",
+                    report.get("oof_brier_champion_calibrated", report.get("oof_brier_meta_calibrated", base_brier)),
+                )
+            )
             baseline.append(base_brier)
             champion.append(champ_brier)
             regressions.append(champ_brier - base_brier)
@@ -51,6 +56,8 @@ def run() -> None:
             f"{gender} validation={status} mean_improvement={mean_improvement:.6f} "
             f"worst_regression={worst_regression:.6f}"
         )
+        if "champion_raw_model" in report:
+            print(f"{gender} champion_raw_model={report['champion_raw_model']} calibration={report.get('calibration')}")
 
 
 if __name__ == "__main__":

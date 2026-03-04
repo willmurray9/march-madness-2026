@@ -2,6 +2,7 @@ rolling_windows:
   short: 5
   mid: 10
   long: 20
+inference_daynum_cutoff: 133
 
 elo:
   base_rating: 1500.0

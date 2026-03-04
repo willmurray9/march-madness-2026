@@ -29,7 +29,7 @@ def run() -> None:
         write_json(report, reports_dir / f"{gender}_train_report.json")
         print(
             f"{gender}: trained rows={report['rows']} features={report['feature_count']} "
-            f"oof_brier={report['oof_brier_meta_calibrated']:.6f}"
+            f"oof_brier={report['oof_brier_champion_calibrated']:.6f}"
         )
 
 
