@@ -8,6 +8,7 @@ from typing import Any
 
 import pandas as pd
 
+from mm2026.backtest.bracket2025 import run_bracket_backtest_2025
 from mm2026.utils.config import load_all_configs
 from mm2026.utils.io import ensure_dir, read_csv, write_csv, write_json
 
@@ -169,6 +170,23 @@ def run() -> None:
     train_reports = _train_reports(cfg)
     file_summaries = _collect_file_summaries(cfg)
     latest_submission = _latest_manifest(submissions_dir)
+    bracket_backtest_path = reports_dir / "bracket_2025_backtest.json"
+    backtests: dict[str, Any] = {}
+
+    try:
+        bracket_payload = run_bracket_backtest_2025(cfg)
+        write_json(bracket_payload, bracket_backtest_path)
+        m_metrics = bracket_payload.get("genders", {}).get("M", {}).get("metrics", {})
+        w_metrics = bracket_payload.get("genders", {}).get("W", {}).get("metrics", {})
+        backtests["bracket_2025"] = {
+            "path": str(bracket_backtest_path),
+            "generated_at_utc": bracket_payload.get("generated_at_utc"),
+            "season": bracket_payload.get("season"),
+            "men_brier_overall": m_metrics.get("brier_overall"),
+            "women_brier_overall": w_metrics.get("brier_overall"),
+        }
+    except Exception as exc:
+        backtests["bracket_2025"] = {"error": str(exc)}
 
     payload = {
         "run_id": stamp,
@@ -178,6 +196,7 @@ def run() -> None:
         "file_summaries": file_summaries,
         "train_reports": train_reports,
         "submission": latest_submission,
+        "backtests": backtests,
     }
 
     write_json(payload, reports_dir / f"observability_snapshot_{stamp}.json")
@@ -213,4 +232,3 @@ def run() -> None:
 
 if __name__ == "__main__":
     run()
-

@@ -230,6 +230,61 @@ def _load_submission_df(snapshot: dict[str, Any]) -> pd.DataFrame:
     return df
 
 
+def _load_bracket_backtest(snapshot: dict[str, Any]) -> dict[str, Any]:
+    backtest_path = snapshot.get("backtests", {}).get("bracket_2025", {}).get("path")
+    if not backtest_path:
+        return {}
+    path = Path(backtest_path)
+    if not path.exists():
+        return {}
+    return _load_json(path)
+
+
+def _round_sort_key(label: str) -> int:
+    order = {
+        "Play-In": 0,
+        "Round of 64": 1,
+        "Round of 32": 2,
+        "Sweet 16": 3,
+        "Elite 8": 4,
+        "Final Four": 5,
+        "Championship": 6,
+    }
+    return order.get(str(label), 99)
+
+
+def _bracket_table_df(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows).copy()
+    if df.empty:
+        return df
+    keep = [
+        "round_label",
+        "slot",
+        "team_low_name",
+        "team_low_seed",
+        "team_high_name",
+        "team_high_seed",
+        "pred_team_low_win",
+        "winner_team_name",
+    ]
+    keep = [c for c in keep if c in df.columns]
+    out = df[keep].copy()
+    out = out.sort_values(["round_label", "slot"], key=lambda s: s.map(_round_sort_key) if s.name == "round_label" else s)
+    rename = {
+        "round_label": "Round",
+        "slot": "Slot",
+        "team_low_name": "Team Low",
+        "team_low_seed": "Low Seed",
+        "team_high_name": "Team High",
+        "team_high_seed": "High Seed",
+        "pred_team_low_win": "P(Low Wins)",
+        "winner_team_name": "Winner",
+    }
+    return out.rename(columns=rename)
+
+
 def _brier_example_df() -> pd.DataFrame:
     demo = pd.DataFrame(
         {
@@ -385,6 +440,7 @@ def main() -> None:
     pred_hist = _prediction_summary(snapshot)
     season_df = _season_rows(snapshot)
     train_df = _train_rows(snapshot)
+    bracket_backtest = _load_bracket_backtest(snapshot)
 
     top = st.columns(4)
     top[0].metric("Snapshot UTC", snapshot.get("generated_at_utc", "unknown"))
@@ -550,6 +606,61 @@ def main() -> None:
             .sort_values(["season", "gender"]),
             width="stretch",
         )
+
+    st.subheader("5) 2025 Bracket Retrospective")
+    if not bracket_backtest:
+        st.info("No 2025 bracket backtest artifact found. Run `make observe`.")
+    else:
+        season = bracket_backtest.get("season", 2025)
+        st.caption(
+            f"Leakage-safe setup: train on seasons <= 2024; infer season {season} bracket with cutoff DayNum "
+            f"{bracket_backtest.get('daynum_cutoff', 'n/a')}."
+        )
+        for gender in ["M", "W"]:
+            gender_payload = bracket_backtest.get("genders", {}).get(gender, {})
+            if not gender_payload:
+                st.warning(f"No backtest payload for {gender}.")
+                continue
+            metrics = gender_payload.get("metrics", {})
+            predicted_games = gender_payload.get("predicted_games", [])
+            actual_games = gender_payload.get("actual_games", [])
+
+            st.markdown(f"**{gender} Tournament**")
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            brier_overall = metrics.get("brier_overall")
+            mc1.metric("Brier (overall)", f"{brier_overall:.6f}" if isinstance(brier_overall, (int, float)) else "n/a")
+            champ_hit = metrics.get("champion_hit")
+            mc2.metric("Champion Hit", "n/a" if champ_hit is None else ("Yes" if champ_hit else "No"))
+            mc3.metric("Final Four Overlap", str(metrics.get("final_four_overlap_count", "n/a")))
+            mc4.metric("Games Scored", str(metrics.get("games_total", "n/a")))
+
+            st.caption("Predicted bracket")
+            pred_df = _bracket_table_df(predicted_games)
+            if pred_df.empty:
+                st.info(f"No predicted bracket rows for {gender}.")
+            else:
+                st.dataframe(pred_df, width="stretch")
+
+            st.caption("Actual bracket")
+            act_df = _bracket_table_df(actual_games)
+            if act_df.empty:
+                st.info(f"No actual bracket rows for {gender}.")
+            else:
+                st.dataframe(act_df, width="stretch")
+
+            brier_rows = []
+            for round_label, round_brier in metrics.get("brier_by_round", {}).items():
+                brier_rows.append(
+                    {
+                        "Round": round_label,
+                        "Games": int(metrics.get("games_by_round", {}).get(round_label, 0)),
+                        "Brier": float(round_brier),
+                    }
+                )
+            if brier_rows:
+                brier_df = pd.DataFrame(brier_rows).sort_values("Round", key=lambda s: s.map(_round_sort_key))
+                st.caption("Per-round Brier (realized 2025 bracket games)")
+                st.dataframe(brier_df, width="stretch")
 
 
 if __name__ == "__main__":
