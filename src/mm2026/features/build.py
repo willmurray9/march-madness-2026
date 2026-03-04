@@ -191,7 +191,7 @@ def run() -> None:
         home_advantage=feat_cfg["elo"]["home_advantage"],
     )
 
-    sample_df = read_csv(curated_dir / "SampleSubmissionStage2.csv")
+    sample_df = read_csv(curated_dir / "SampleSubmissionConfigured.csv")
 
     for gender in data_cfg.get("genders", ["M", "W"]):
         reg_long = read_csv(curated_dir / f"{gender}_regular_season_long.csv")

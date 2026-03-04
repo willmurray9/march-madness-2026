@@ -46,7 +46,8 @@ def run() -> None:
 
     submission = pd.concat(all_parts, ignore_index=True)
 
-    sample = read_csv(Path(data_cfg["curated_dir"]) / "SampleSubmissionStage2.csv")
+    sample_cfg_path = Path(data_cfg["sample_submission_file"])
+    sample = read_csv(sample_cfg_path)
     if not sample.empty:
         expected_ids = set(sample["ID"].tolist())
         got_ids = set(submission["ID"].tolist())
@@ -59,7 +60,8 @@ def run() -> None:
     _validate_submission(submission)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out_path = submissions_dir / f"{stamp}_stage2.csv"
+    stage_label = "stage2" if "stage2" in sample_cfg_path.name.lower() else "stage1"
+    out_path = submissions_dir / f"{stamp}_{stage_label}.csv"
     write_csv(submission, out_path)
 
     manifest = {
