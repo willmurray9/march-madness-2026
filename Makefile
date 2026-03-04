@@ -1,7 +1,7 @@
 PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 PYTHONPATH := src
 
-.PHONY: data features train validate submit observe dashboard all test
+.PHONY: data features train validate submit explain observe dashboard all test
 
 data:
 	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m mm2026.cli data
@@ -17,6 +17,9 @@ validate:
 
 submit:
 	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m mm2026.cli submit
+
+explain:
+	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m mm2026.cli explain
 
 observe:
 	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m mm2026.cli observe

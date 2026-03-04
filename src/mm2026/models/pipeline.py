@@ -11,18 +11,10 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+from catboost import CatBoostClassifier
 
 from mm2026.utils.metrics import brier_score
-
-try:
-    from xgboost import XGBClassifier
-except Exception:  # pragma: no cover - optional dependency
-    XGBClassifier = None
-
-try:
-    from catboost import CatBoostClassifier
-except Exception:  # pragma: no cover - optional dependency
-    CatBoostClassifier = None
 
 
 @dataclass
@@ -43,14 +35,7 @@ FEATURE_PREFIX = "diff_"
 def _enabled_model_names(model_cfg: dict[str, Any]) -> list[str]:
     cfg = model_cfg.get("ensemble", {})
     names = list(cfg.get("enabled_base_models", ["logistic", "hgb", "elo"]))
-    out = []
-    for name in names:
-        if name == "xgb" and XGBClassifier is None:
-            continue
-        if name == "catboost" and CatBoostClassifier is None:
-            continue
-        out.append(name)
-    return out
+    return names
 
 
 def _fit_base_models(
@@ -90,7 +75,7 @@ def _fit_base_models(
         rf.fit(X, y)
         out["rf"] = rf
 
-    if "xgb" in enabled_models and XGBClassifier is not None:
+    if "xgb" in enabled_models:
         xgb = XGBClassifier(
             n_estimators=int(xgb_cfg.get("n_estimators", 400)),
             max_depth=int(xgb_cfg.get("max_depth", 5)),
@@ -107,7 +92,7 @@ def _fit_base_models(
         xgb.fit(X, y)
         out["xgb"] = xgb
 
-    if "catboost" in enabled_models and CatBoostClassifier is not None:
+    if "catboost" in enabled_models:
         cb = CatBoostClassifier(
             iterations=int(cb_cfg.get("iterations", 600)),
             depth=int(cb_cfg.get("depth", 6)),
@@ -254,6 +239,12 @@ def train_gender(
     holdouts = train_cfg["holdout_seasons"]
     elo_scale = model_cfg["base_models"]["elo"]["scale"]
     enabled_models = _enabled_model_names(model_cfg)
+    required_models = {"xgb", "catboost"}
+    missing_required = sorted(required_models - set(enabled_models))
+    if missing_required:
+        raise ValueError(
+            f"Missing required base models in configs/models.yaml ensemble.enabled_base_models: {missing_required}"
+        )
     if "elo" not in enabled_models:
         enabled_models.append("elo")
 

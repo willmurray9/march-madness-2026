@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 
 from mm2026.backtest.bracket2025 import run_bracket_backtest_2025
+from mm2026.observability.explainability import run as run_explainability
 from mm2026.utils.config import load_all_configs
 from mm2026.utils.io import ensure_dir, read_csv, write_csv, write_json
 
@@ -168,6 +169,7 @@ def run() -> None:
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     train_reports = _train_reports(cfg)
+    explainability_reports = run_explainability(cfg)
     file_summaries = _collect_file_summaries(cfg)
     latest_submission = _latest_manifest(submissions_dir)
     bracket_backtest_path = reports_dir / "bracket_2025_backtest.json"
@@ -195,6 +197,7 @@ def run() -> None:
         "artifacts_dir": str(artifacts_dir),
         "file_summaries": file_summaries,
         "train_reports": train_reports,
+        "explainability_reports": explainability_reports,
         "submission": latest_submission,
         "backtests": backtests,
     }

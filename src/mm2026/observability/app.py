@@ -157,8 +157,8 @@ def _model_method_description_map() -> dict[str, str]:
         "logistic": "Regularized linear baseline on matchup feature deltas.",
         "hgb": "Histogram gradient-boosted trees for non-linear tabular patterns.",
         "rf": "Random forest ensemble over tabular features.",
-        "xgb": "XGBoost boosted trees (if dependency is installed).",
-        "catboost": "CatBoost boosted trees (if dependency is installed).",
+        "xgb": "XGBoost boosted trees.",
+        "catboost": "CatBoost boosted trees.",
         "elo": "Hand-crafted Elo probability curve from Elo rating deltas.",
         "blend": "Weighted average of base model probabilities.",
         "meta": "Stacked logistic meta-model trained on base model outputs.",
@@ -238,6 +238,15 @@ def _load_bracket_backtest(snapshot: dict[str, Any]) -> dict[str, Any]:
     if not path.exists():
         return {}
     return _load_json(path)
+
+
+def _load_explainability_payload(snapshot: dict[str, Any], gender: str) -> dict[str, Any]:
+    reports = snapshot.get("explainability_reports", {})
+    report = reports.get(gender, {}) if isinstance(reports, dict) else {}
+    path = report.get("path") if isinstance(report, dict) else None
+    if path and Path(path).exists():
+        return _load_json(Path(path))
+    return report if isinstance(report, dict) else {}
 
 
 def _round_sort_key(label: str) -> int:
@@ -392,15 +401,7 @@ def _brier_with_real_matchups(max_rows_per_gender: int = 6000) -> tuple[pd.DataF
         if len(df) > max_rows_per_gender:
             df = df.sample(n=max_rows_per_gender, random_state=42).sort_index()
 
-        try:
-            bundle = load_bundle(bundle_path)
-        except ModuleNotFoundError as exc:
-            missing = getattr(exc, "name", "unknown")
-            warnings.append(
-                f"{gender}: model bundle needs optional package `{missing}`. "
-                "Install it or retrain without that base model."
-            )
-            continue
+        bundle = load_bundle(bundle_path)
 
         model_cfg = {"base_models": {"elo": {"scale": 400.0}}}
         preds = predict_gender(bundle, df, model_cfg=model_cfg)
@@ -441,6 +442,7 @@ def main() -> None:
     season_df = _season_rows(snapshot)
     train_df = _train_rows(snapshot)
     bracket_backtest = _load_bracket_backtest(snapshot)
+    explainability = {g: _load_explainability_payload(snapshot, g) for g in ["M", "W"]}
 
     top = st.columns(4)
     top[0].metric("Snapshot UTC", snapshot.get("generated_at_utc", "unknown"))
@@ -476,7 +478,48 @@ def main() -> None:
             width="stretch",
         )
 
-    st.subheader("3) Prediction Visualization")
+    st.subheader("3) Explainability")
+    for gender in ["M", "W"]:
+        report = explainability.get(gender, {})
+        st.markdown(f"**{gender} Explainability**")
+        if not report or report.get("status") != "ok":
+            st.info(f"No explainability report for {gender}. Run `make observe` after `make train`.")
+            continue
+
+        top = report.get("top_features", {})
+        perm_top = pd.DataFrame(top.get("permutation", []))
+        coef_top = pd.DataFrame(top.get("logistic_abs_coef", []))
+        shap_top = top.get("shap_mean_abs", {})
+        artifacts = report.get("artifacts", {})
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Holdout Rows", str(report.get("rows_scored", "n/a")))
+        c2.metric("Feature Count", str(report.get("feature_count", "n/a")))
+        c3.metric("Champion Raw Model", str(report.get("champion_raw_model", "n/a")))
+
+        if not perm_top.empty:
+            st.caption("Permutation importance (mean Brier increase when permuted)")
+            st.dataframe(perm_top, width="stretch")
+        if not coef_top.empty:
+            st.caption("Logistic coefficient importance (absolute coefficient)")
+            st.dataframe(coef_top, width="stretch")
+
+        shap_artifacts = artifacts.get("shap", {}) if isinstance(artifacts, dict) else {}
+        for model_name in ["hgb", "xgb", "catboost"]:
+            model_payload = shap_artifacts.get(model_name, {})
+            if not model_payload:
+                continue
+            st.caption(f"SHAP ({model_name})")
+            if isinstance(shap_top, dict):
+                top_df = pd.DataFrame(shap_top.get(model_name, []))
+                if not top_df.empty:
+                    st.dataframe(top_df, width="stretch")
+            for key in ["bar_plot", "beeswarm_plot"]:
+                path = model_payload.get(key)
+                if path and Path(path).exists():
+                    st.image(str(path), caption=f"{model_name} {key.replace('_', ' ')}", use_container_width=True)
+
+    st.subheader("4) Prediction Visualization")
     if submission_seeded.empty:
         st.info("No submission file found in latest snapshot.")
     else:
@@ -541,7 +584,7 @@ def main() -> None:
             width="stretch",
         )
 
-    st.subheader("4) How Brier Score Is Calculated")
+    st.subheader("5) How Brier Score Is Calculated")
     st.code("Brier = mean((y_pred - y_true)^2)", language="text")
     st.caption(
         "Lower is better. Perfect predictions have Brier = 0.0. "
@@ -607,7 +650,7 @@ def main() -> None:
             width="stretch",
         )
 
-    st.subheader("5) 2025 Bracket Retrospective")
+    st.subheader("6) 2025 Bracket Retrospective")
     if not bracket_backtest:
         st.info("No 2025 bracket backtest artifact found. Run `make observe`.")
     else:

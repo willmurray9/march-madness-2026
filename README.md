@@ -37,6 +37,7 @@ make features
 make train
 make validate
 make submit
+make explain
 make observe
 ```
 
@@ -71,11 +72,17 @@ The dashboard reads:
 - Base models:
   - Logistic regression
   - Histogram gradient boosting
+  - XGBoost
+  - CatBoost
   - Elo probability model
 - Stacking:
   - Logistic meta-model trained on out-of-fold base predictions
 - Calibration:
   - Auto-select from `none`, `platt`, `isotonic` by OOF Brier
+- Explainability:
+  - Holdout-only permutation importance
+  - Logistic coefficient rankings
+  - SHAP plots for tree models in the Streamlit dashboard
 
 ## Validation Strategy
 

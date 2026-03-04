@@ -15,6 +15,7 @@ Each snapshot includes:
 - Config file hashes for `configs/data.yaml`, `configs/features.yaml`, `configs/models.yaml`, `configs/train.yaml`
 - Data and feature file summaries (exists, rows, cols, null fraction, modified time)
 - Men and women train reports (`*_train_report.json`)
+- Men and women explainability reports (`reports/explainability/*_explainability.json`)
 - Latest submission manifest (`*_manifest.json`)
 
 ## Dashboard
@@ -31,4 +32,5 @@ The Streamlit app renders:
 - Pipeline asset inventory and data quality summary
 - Training metrics and season-level validation curves
 - Blend/calibration details for each gender
+- Holdout-only feature importance and SHAP visualizations
 - Latest submission prediction distribution
