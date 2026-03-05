@@ -29,7 +29,7 @@ def run() -> None:
 
         baseline = []
         champion = []
-        regressions = []
+        non_worse_count = 0
         for season, vals in season_metrics.items():
             base_brier = float(vals.get("brier_blend_tuned", vals.get("brier_blend_equal")))
             champ_brier = float(
@@ -40,21 +40,23 @@ def run() -> None:
             )
             baseline.append(base_brier)
             champion.append(champ_brier)
-            regressions.append(champ_brier - base_brier)
+            if champ_brier <= base_brier:
+                non_worse_count += 1
             print(
                 f"{gender} season={season} baseline={base_brier:.6f} "
                 f"champion={champ_brier:.6f} delta={champ_brier - base_brier:+.6f}"
             )
 
         mean_improvement = sum(baseline) / len(baseline) - sum(champion) / len(champion)
-        worst_regression = max(regressions)
-        pass_mean = mean_improvement >= float(gates["required_mean_improvement"])
-        pass_worst = worst_regression <= float(gates["max_worst_season_regression"])
+        required_lift = float(gates.get("min_material_lift", 0.0))
+        min_non_worse = int(gates.get("min_non_worse_seasons", len(baseline)))
+        pass_mean = mean_improvement >= required_lift
+        pass_non_worse = non_worse_count >= min_non_worse
 
-        status = "PASS" if pass_mean and pass_worst else "FAIL"
+        status = "PASS" if pass_mean and pass_non_worse else "FAIL"
         print(
             f"{gender} validation={status} mean_improvement={mean_improvement:.6f} "
-            f"worst_regression={worst_regression:.6f}"
+            f"non_worse_seasons={non_worse_count}/{len(baseline)}"
         )
         if "champion_raw_model" in report:
             print(f"{gender} champion_raw_model={report['champion_raw_model']} calibration={report.get('calibration')}")

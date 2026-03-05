@@ -146,6 +146,129 @@ def _train_reports(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _feature_families(cfg: dict[str, Any]) -> dict[str, bool]:
+    families = cfg.get("features", {}).get("feature_families", {})
+    keys = ["advanced_rates", "sos_adjusted", "volatility", "trend", "elo_upgrades"]
+    return {k: bool(families.get(k, False)) for k in keys}
+
+
+def _family_signature(families: dict[str, bool]) -> str:
+    parts = [f"{k}={int(v)}" for k, v in sorted(families.items())]
+    return "|".join(parts)
+
+
+def _baseline_signature() -> str:
+    return _family_signature(
+        {
+            "advanced_rates": False,
+            "sos_adjusted": False,
+            "volatility": False,
+            "trend": False,
+            "elo_upgrades": False,
+        }
+    )
+
+
+def _find_baseline_snapshot(
+    *,
+    reports_dir: Path,
+    gender: str,
+    oof_value: float | None,
+    baseline_sig: str,
+) -> tuple[str | None, dict[str, Any]]:
+    runs_idx = reports_dir / "runs_index.csv"
+    if not runs_idx.exists():
+        return None, {}
+    df = read_csv(runs_idx)
+    if df.empty:
+        return None, {}
+    sig_col = "feature_family_signature"
+    if sig_col not in df.columns:
+        return None, {}
+    oof_col = "m_oof_brier" if gender == "M" else "w_oof_brier"
+    if oof_col not in df.columns:
+        return None, {}
+    cand = df[(df[sig_col] == baseline_sig) & (df[oof_col].notna())].copy()
+    if cand.empty:
+        return None, {}
+    cand = cand.sort_values("generated_at_utc")
+    row = cand.iloc[-1]
+    run_id = str(row.get("run_id"))
+    snap_path = row.get("snapshot_path")
+    if isinstance(snap_path, str) and snap_path:
+        path = Path(snap_path)
+    else:
+        path = reports_dir / f"observability_snapshot_{run_id}.json"
+    if not path.exists():
+        return run_id, {}
+    payload = _read_json(path)
+    return run_id, payload
+
+
+def _promotion_for_gender(
+    *,
+    gender: str,
+    train_report: dict[str, Any],
+    baseline_report: dict[str, Any],
+    baseline_run_id: str | None,
+    gates: dict[str, Any],
+) -> dict[str, Any]:
+    current_oof = train_report.get("oof_brier_champion_calibrated")
+    baseline_oof = baseline_report.get("oof_brier_champion_calibrated") if baseline_report else None
+    if current_oof is None:
+        return {"status": "unavailable"}
+    if baseline_oof is None:
+        return {"status": "no_baseline", "baseline_run_id": baseline_run_id}
+
+    current_oof_f = float(current_oof)
+    baseline_oof_f = float(baseline_oof)
+    lift = baseline_oof_f - current_oof_f
+    min_lift = float(gates.get("min_material_lift", 0.0))
+
+    cur_season = train_report.get("season_metrics", {}) if isinstance(train_report, dict) else {}
+    base_season = baseline_report.get("season_metrics", {}) if isinstance(baseline_report, dict) else {}
+    shared = sorted(set(cur_season.keys()) & set(base_season.keys()), key=lambda x: int(x))
+    non_worse = 0
+    checked = 0
+    season_rows: list[dict[str, Any]] = []
+    for s in shared:
+        cur_vals = cur_season.get(s, {})
+        base_vals = base_season.get(s, {})
+        cur_b = cur_vals.get("brier_champion_calibrated")
+        base_b = base_vals.get("brier_champion_calibrated")
+        if cur_b is None or base_b is None:
+            continue
+        cur_b_f = float(cur_b)
+        base_b_f = float(base_b)
+        checked += 1
+        if cur_b_f <= base_b_f:
+            non_worse += 1
+        season_rows.append(
+            {
+                "season": int(s),
+                "current_brier": cur_b_f,
+                "baseline_brier": base_b_f,
+                "delta": cur_b_f - base_b_f,
+            }
+        )
+
+    min_non_worse = int(gates.get("min_non_worse_seasons", checked))
+    promoted = lift >= min_lift and non_worse >= min_non_worse
+    return {
+        "status": "ok",
+        "baseline_run_id": baseline_run_id,
+        "baseline_oof_brier": baseline_oof_f,
+        "current_oof_brier": current_oof_f,
+        "lift": lift,
+        "min_material_lift": min_lift,
+        "non_worse_seasons": non_worse,
+        "shared_seasons_checked": checked,
+        "min_non_worse_seasons": min_non_worse,
+        "promoted": bool(promoted),
+        "season_deltas": season_rows,
+    }
+
+
 def _upsert_runs_index(path: Path, row: dict[str, Any]) -> None:
     if path.exists():
         df = read_csv(path)
@@ -169,6 +292,10 @@ def run() -> None:
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     train_reports = _train_reports(cfg)
+    families = _feature_families(cfg)
+    family_sig = _family_signature(families)
+    baseline_sig = _baseline_signature()
+    gates = cfg.get("train", {}).get("promotion_gates", {})
     explainability_reports = run_explainability(cfg)
     file_summaries = _collect_file_summaries(cfg)
     latest_submission = _latest_manifest(submissions_dir)
@@ -193,6 +320,9 @@ def run() -> None:
     payload = {
         "run_id": stamp,
         "generated_at_utc": stamp,
+        "feature_families": families,
+        "feature_family_signature": family_sig,
+        "is_baseline_feature_set": family_sig == baseline_sig,
         "config_hashes": _config_hashes(),
         "artifacts_dir": str(artifacts_dir),
         "file_summaries": file_summaries,
@@ -202,7 +332,29 @@ def run() -> None:
         "backtests": backtests,
     }
 
-    write_json(payload, reports_dir / f"observability_snapshot_{stamp}.json")
+    promotions: dict[str, Any] = {}
+    baseline_runs: dict[str, str | None] = {}
+    for gender in data_cfg.get("genders", ["M", "W"]):
+        current_report = train_reports.get(gender, {})
+        baseline_run_id, baseline_snapshot = _find_baseline_snapshot(
+            reports_dir=reports_dir,
+            gender=gender,
+            oof_value=current_report.get("oof_brier_champion_calibrated") if isinstance(current_report, dict) else None,
+            baseline_sig=baseline_sig,
+        )
+        baseline_runs[gender] = baseline_run_id
+        baseline_train = baseline_snapshot.get("train_reports", {}).get(gender, {}) if baseline_snapshot else {}
+        promotions[gender] = _promotion_for_gender(
+            gender=gender,
+            train_report=current_report if isinstance(current_report, dict) else {},
+            baseline_report=baseline_train if isinstance(baseline_train, dict) else {},
+            baseline_run_id=baseline_run_id,
+            gates=gates if isinstance(gates, dict) else {},
+        )
+    payload["promotion"] = {"gates": gates, "baseline_signature": baseline_sig, "by_gender": promotions}
+
+    snapshot_path = reports_dir / f"observability_snapshot_{stamp}.json"
+    write_json(payload, snapshot_path)
     write_json(payload, reports_dir / "observability_latest.json")
 
     men = train_reports.get("M", {})
@@ -223,8 +375,18 @@ def run() -> None:
         "w_champion": women.get("champion_raw_model"),
         "m_calibration": men.get("calibration"),
         "w_calibration": women.get("calibration"),
+        "feature_family_signature": family_sig,
+        "feature_families_json": json.dumps(families, sort_keys=True),
+        "is_baseline_feature_set": family_sig == baseline_sig,
+        "baseline_run_m": baseline_runs.get("M"),
+        "baseline_run_w": baseline_runs.get("W"),
+        "m_lift_vs_baseline": promotions.get("M", {}).get("lift"),
+        "w_lift_vs_baseline": promotions.get("W", {}).get("lift"),
+        "m_promoted": promotions.get("M", {}).get("promoted"),
+        "w_promoted": promotions.get("W", {}).get("promoted"),
         "submission_rows": latest_submission.get("rows"),
         "submission_path": latest_submission.get("path"),
+        "snapshot_path": str(snapshot_path),
     }
     _upsert_runs_index(reports_dir / "runs_index.csv", index_row)
 

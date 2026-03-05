@@ -32,9 +32,11 @@ def _load_latest_snapshot(reports_dir: Path) -> dict[str, Any]:
 
 def _train_rows(snapshot: dict[str, Any]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
+    promotion = snapshot.get("promotion", {}).get("by_gender", {})
     for gender, report in snapshot.get("train_reports", {}).items():
         if not report:
             continue
+        promo = promotion.get(gender, {}) if isinstance(promotion, dict) else {}
         rows.append(
             {
                 "gender": gender,
@@ -46,6 +48,9 @@ def _train_rows(snapshot: dict[str, Any]) -> pd.DataFrame:
                 "oof_brier_meta_raw": report.get("oof_brier_meta_raw"),
                 "champion_raw_model": report.get("champion_raw_model"),
                 "calibration": report.get("calibration"),
+                "lift_vs_baseline": promo.get("lift"),
+                "promoted": promo.get("promoted"),
+                "baseline_run_id": promo.get("baseline_run_id"),
             }
         )
     return pd.DataFrame(rows)
@@ -451,6 +456,14 @@ def main() -> None:
     mean_brier = float(train_df["oof_brier_champion_calibrated"].mean()) if not train_df.empty else float("nan")
     top[3].metric("Mean OOF Brier (M/W)", f"{mean_brier:.6f}" if not np.isnan(mean_brier) else "n/a")
 
+    fam = snapshot.get("feature_families", {})
+    if isinstance(fam, dict):
+        enabled = [k for k, v in fam.items() if bool(v)]
+        st.caption(
+            "Feature families: "
+            + (", ".join(sorted(enabled)) if enabled else "baseline (all candidate families disabled)")
+        )
+
     st.subheader("1) Dataset Overview")
     if dataset_df.empty:
         st.info("No dataset summaries found. Run `make observe`.")
@@ -473,6 +486,9 @@ def main() -> None:
                     "champion_raw_model",
                     "calibration",
                     "oof_brier_champion_calibrated",
+                    "lift_vs_baseline",
+                    "promoted",
+                    "baseline_run_id",
                 ]
             ],
             width="stretch",

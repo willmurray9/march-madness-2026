@@ -67,11 +67,28 @@ def _load_snapshot_for_2025(cfg: dict[str, Any], gender: str) -> pd.DataFrame:
         base_rating=float(feat_cfg["elo"]["base_rating"]),
         k_factor=float(feat_cfg["elo"]["k_factor"]),
         home_advantage=float(feat_cfg["elo"]["home_advantage"]),
+        use_margin_multiplier=bool(feat_cfg["elo"].get("use_margin_multiplier", False)),
+        margin_multiplier_scale=float(feat_cfg["elo"].get("margin_multiplier_scale", 1.0)),
+        use_dynamic_k=bool(feat_cfg["elo"].get("use_dynamic_k", False)),
+        dynamic_k_base=float(feat_cfg["elo"].get("dynamic_k_base", feat_cfg["elo"]["k_factor"])),
+        dynamic_k_min=float(feat_cfg["elo"].get("dynamic_k_min", 12.0)),
+        dynamic_k_max=float(feat_cfg["elo"].get("dynamic_k_max", 40.0)),
+        dynamic_k_margin_scale=float(feat_cfg["elo"].get("dynamic_k_margin_scale", 6.0)),
     )
+    feature_families = {
+        "advanced_rates": bool(feat_cfg.get("feature_families", {}).get("advanced_rates", False)),
+        "sos_adjusted": bool(feat_cfg.get("feature_families", {}).get("sos_adjusted", False)),
+        "volatility": bool(feat_cfg.get("feature_families", {}).get("volatility", False)),
+        "trend": bool(feat_cfg.get("feature_families", {}).get("trend", False)),
+        "elo_upgrades": bool(feat_cfg.get("feature_families", {}).get("elo_upgrades", False)),
+    }
+    if not feature_families["elo_upgrades"]:
+        elo_cfg.use_margin_multiplier = False
+        elo_cfg.use_dynamic_k = False
     day_cutoff = int(feat_cfg.get("inference_daynum_cutoff", 133))
 
     reg_feat = _add_efficiency_features(reg_long)
-    reg_roll = _add_rolling_features(reg_feat, feat_cfg["rolling_windows"])
+    reg_roll = _add_rolling_features(reg_feat, feat_cfg["rolling_windows"], feature_families=feature_families)
     elo_hist = _compute_elo_history_from_compact(compact, elo_cfg)
     seeds = _prep_seeds(seeds_raw)
 
@@ -91,6 +108,7 @@ def _load_snapshot_for_2025(cfg: dict[str, Any], gender: str) -> pd.DataFrame:
         elo_hist_df=elo_hist,
         seeds_df=seeds,
         elo_base=elo_cfg.base_rating,
+        feature_families=feature_families,
     )
     if snap.empty:
         return pd.DataFrame()

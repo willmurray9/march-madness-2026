@@ -8,9 +8,23 @@ from mm2026.utils.config import load_all_configs
 from mm2026.utils.io import ensure_dir, read_csv, write_csv
 
 
+BOX_COLS = ["FGM", "FGA", "FGM3", "FGA3", "FTM", "FTA", "OR", "DR", "Ast", "TO", "Stl", "Blk", "PF"]
+
+
+def _col_or_nan(df: pd.DataFrame, col: str) -> pd.Series:
+    if col in df.columns:
+        return df[col]
+    return pd.Series([pd.NA] * len(df), index=df.index)
+
+
 def _build_long_games(df: pd.DataFrame, gender: str) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
+
+    winner_cols = {f"Team{c}": _col_or_nan(df, f"W{c}") for c in BOX_COLS}
+    winner_opp_cols = {f"Opp{c}": _col_or_nan(df, f"L{c}") for c in BOX_COLS}
+    loser_cols = {f"Team{c}": _col_or_nan(df, f"L{c}") for c in BOX_COLS}
+    loser_opp_cols = {f"Opp{c}": _col_or_nan(df, f"W{c}") for c in BOX_COLS}
 
     winners = pd.DataFrame(
         {
@@ -24,6 +38,8 @@ def _build_long_games(df: pd.DataFrame, gender: str) -> pd.DataFrame:
             "NumOT": df.get("NumOT", 0),
             "IsWin": 1,
             "Gender": gender,
+            **winner_cols,
+            **winner_opp_cols,
         }
     )
     losers = pd.DataFrame(
@@ -38,6 +54,8 @@ def _build_long_games(df: pd.DataFrame, gender: str) -> pd.DataFrame:
             "NumOT": df.get("NumOT", 0),
             "IsWin": 0,
             "Gender": gender,
+            **loser_cols,
+            **loser_opp_cols,
         }
     )
     long_df = pd.concat([winners, losers], ignore_index=True)

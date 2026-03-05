@@ -4,10 +4,24 @@ rolling_windows:
   long: 20
 inference_daynum_cutoff: 133
 
+feature_families:
+  advanced_rates: true
+  sos_adjusted: true
+  volatility: true
+  trend: true
+  elo_upgrades: true
+
 elo:
   base_rating: 1500.0
   k_factor: 20.0
   home_advantage: 60.0
+  use_margin_multiplier: true
+  margin_multiplier_scale: 1.0
+  use_dynamic_k: true
+  dynamic_k_base: 20.0
+  dynamic_k_min: 12.0
+  dynamic_k_max: 40.0
+  dynamic_k_margin_scale: 6.0
 
 columns:
   core_stats:

@@ -7,5 +7,5 @@ holdout_seasons:
   - 2025
 
 promotion_gates:
-  max_worst_season_regression: 0.02
-  required_mean_improvement: 0.0
+  min_material_lift: 0.0005
+  min_non_worse_seasons: 4

@@ -12,6 +12,8 @@ def run() -> None:
     data_cfg = cfg["data"]
     model_cfg = cfg["models"]
     train_cfg = cfg["train"]
+    feat_cfg = cfg.get("features", {})
+    feature_families = feat_cfg.get("feature_families", {})
 
     features_dir = Path(data_cfg["features_dir"])
     artifacts_dir = ensure_dir(data_cfg["artifacts_dir"])
@@ -25,6 +27,7 @@ def run() -> None:
             continue
 
         bundle, report = train_gender(train_df, model_cfg=model_cfg, train_cfg=train_cfg)
+        report["feature_families"] = feature_families
         save_bundle(bundle, models_dir / f"{gender}_bundle.joblib")
         write_json(report, reports_dir / f"{gender}_train_report.json")
         print(
