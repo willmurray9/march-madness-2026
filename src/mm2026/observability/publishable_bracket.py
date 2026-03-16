@@ -78,8 +78,13 @@ def _seed_map(cfg: dict[str, Any]) -> dict[tuple[int, int], float]:
     out: dict[tuple[int, int], float] = {}
     for gender in ["M", "W"]:
         df = read_csv(curated_dir / f"{gender}_tourney_seeds.csv")
-        if df.empty or "Season" not in df.columns or "TeamID" not in df.columns or "seed_num" not in df.columns:
+        if df.empty or "Season" not in df.columns or "TeamID" not in df.columns:
             continue
+        if "seed_num" not in df.columns:
+            if "Seed" not in df.columns:
+                continue
+            parsed = df["Seed"].astype(str).str.extract(r"(\d{2})", expand=False)
+            df = df.assign(seed_num=pd.to_numeric(parsed, errors="coerce"))
         for row in df[["Season", "TeamID", "seed_num"]].dropna().itertuples(index=False):
             out[(int(row.Season), int(row.TeamID))] = float(row.seed_num)
     return out

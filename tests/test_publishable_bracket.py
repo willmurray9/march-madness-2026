@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from mm2026.observability.publishable_bracket import _matchup_key, _selected_bracket_payload, _to_builtin
+from mm2026.observability.publishable_bracket import _matchup_key, _seed_map, _selected_bracket_payload, _to_builtin
 
 
 def test_matchup_key_is_stable() -> None:
@@ -46,4 +46,28 @@ def test_to_builtin_normalizes_numpy_pandas_and_paths() -> None:
         "nan": None,
         "path": "deploy/bracket_center_payload.json",
         "df": [{"team": "Duke", "prob": 0.6}],
+    }
+
+
+def test_seed_map_parses_numeric_seed_from_seed_code(monkeypatch) -> None:
+    def fake_read_csv(path: Path) -> pd.DataFrame:
+        if path.name == "M_tourney_seeds.csv":
+            return pd.DataFrame(
+                [
+                    {"Season": 2026, "Seed": "W01", "TeamID": 1104},
+                    {"Season": 2026, "Seed": "X12", "TeamID": 1242},
+                ]
+            )
+        if path.name == "W_tourney_seeds.csv":
+            return pd.DataFrame(columns=["Season", "Seed", "TeamID"])
+        raise AssertionError(f"Unexpected path: {path}")
+
+    monkeypatch.setattr("mm2026.observability.publishable_bracket.read_csv", fake_read_csv)
+    cfg = {"data": {"curated_dir": "data/curated/latest"}}
+
+    out = _seed_map(cfg)
+
+    assert out == {
+        (2026, 1104): 1.0,
+        (2026, 1242): 12.0,
     }

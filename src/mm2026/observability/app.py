@@ -1041,20 +1041,29 @@ def _render_bracket_center(
                     "Power rankings are derived from the latest submission matrix: for each team, "
                     "we average its predicted win probability across all possible matchups."
                 )
+                show_all = st.checkbox(
+                    "Show all teams",
+                    value=False,
+                    key=f"{gender.lower()}_power_rank_show_all",
+                )
+                display_pool = rankings if show_all else rankings[rankings["IsTournamentTeam"]].copy()
+                if not show_all:
+                    st.caption("Showing the tournament field by default.")
+                max_rows = max(10, min(68, len(display_pool))) if not display_pool.empty else 10
                 top_n = int(
                     st.slider(
                         "Top teams to show",
                         min_value=10,
-                        max_value=50,
-                        value=25,
+                        max_value=max_rows,
+                        value=min(25, max_rows),
                         step=5,
                         key=f"{gender.lower()}_power_rank_n",
                     )
                 )
-                if rankings.empty:
+                if display_pool.empty:
                     st.info(f"No power rankings available for {gender}.")
                 else:
-                    display = rankings[
+                    display = display_pool[
                         [
                             "Rk",
                             "TournamentRk",
