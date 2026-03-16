@@ -10,6 +10,12 @@ import streamlit as st
 
 from mm2026.backtest.bracket2025 import run_current_bracket_forecast, run_submission_bracket_forecast
 from mm2026.models.pipeline import load_bundle, predict_gender
+from mm2026.observability.feature_dictionary import build_feature_dictionary_df
+from mm2026.observability.matchup_explainer import (
+    SOURCE_2025,
+    SOURCE_2026,
+    build_men_matchup_explanation,
+)
 from mm2026.utils.config import load_all_configs
 from mm2026.utils.ids import parse_matchup_id
 
@@ -551,6 +557,182 @@ def _power_rankings_df(
     return out
 
 
+def _pick_rule_label(rule: str) -> str:
+    mapping = {
+        "calibrated": "Calibrated",
+        "raw_tiebreak": "Raw tie-break",
+        "low_team_id_fallback": "Fallback",
+        "actual_outcome": "Actual",
+    }
+    return mapping.get(str(rule), str(rule))
+
+
+def _named_side_label(side: str, low_name: str, high_name: str) -> str:
+    if side == "Low":
+        return low_name
+    if side == "High":
+        return high_name
+    return "Even"
+
+
+def _named_agreement_df(explanation: dict[str, Any]) -> pd.DataFrame:
+    df = pd.DataFrame(explanation.get("agreement_rows", [])).copy()
+    if df.empty:
+        return df
+    low_name = str(explanation.get("team_low_name", "Team Low"))
+    high_name = str(explanation.get("team_high_name", "Team High"))
+    low_prob_col = f"P({low_name} Wins)"
+    high_prob_col = f"P({high_name} Wins)"
+    df[low_prob_col] = df["P(Low Wins)"]
+    df[high_prob_col] = 1.0 - df["P(Low Wins)"]
+    df["Pick"] = df["Pick"].map(lambda value: _named_side_label(str(value), low_name=low_name, high_name=high_name))
+    return df[["Model", low_prob_col, high_prob_col, "Pick"]]
+
+
+def _named_matchup_df(df: pd.DataFrame, explanation: dict[str, Any]) -> pd.DataFrame:
+    if df.empty:
+        return df
+    low_name = str(explanation.get("team_low_name", "Team Low"))
+    high_name = str(explanation.get("team_high_name", "Team High"))
+    return df.rename(
+        columns={
+            "Low Team": low_name,
+            "High Team": high_name,
+            "Low - High": f"{low_name} - {high_name}",
+        }
+    )
+
+
+@st.cache_data
+def _active_feature_dictionary_df(gender: str) -> pd.DataFrame:
+    bundle_path = Path(f"artifacts/models/{gender}_bundle.joblib")
+    if not bundle_path.exists():
+        return pd.DataFrame()
+    bundle = load_bundle(bundle_path)
+    return build_feature_dictionary_df(bundle.feature_cols)
+
+
+def _men_explainer_options(
+    predicted_bracket_current: dict[str, Any],
+    bracket_backtest: dict[str, Any],
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    sources = [
+        (SOURCE_2026, "2026 predicted bracket", predicted_bracket_current.get("genders", {}).get("M", {})),
+        (SOURCE_2025, "2025 backtest", bracket_backtest.get("genders", {}).get("M", {})),
+    ]
+    for source_key, source_label, payload in sources:
+        if not payload or payload.get("status") not in {None, "ok"}:
+            continue
+        for game in payload.get("predicted_games", []):
+            rows.append(
+                {
+                    "source_key": source_key,
+                    "source_label": source_label,
+                    "round_num": int(game.get("round_num", 99)),
+                    "round_label": str(game.get("round_label", "Unknown")),
+                    "slot_order": int(game.get("slot_order", 9999)),
+                    "slot": str(game.get("slot", "")),
+                    "team_low_id": int(game.get("team_low_id")),
+                    "team_high_id": int(game.get("team_high_id")),
+                    "team_low_name": str(game.get("team_low_name", "")),
+                    "team_high_name": str(game.get("team_high_name", "")),
+                    "winner_team_name": str(game.get("winner_team_name", "")),
+                    "label": (
+                        f"{game.get('round_label', 'Unknown')} | "
+                        f"{game.get('team_low_name', '')} vs {game.get('team_high_name', '')} | "
+                        f"Pick: {game.get('winner_team_name', '')}"
+                    ),
+                }
+            )
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values(["source_label", "round_num", "slot_order"]).reset_index(drop=True)
+
+
+def _render_men_matchup_explainer(
+    *,
+    predicted_bracket_current: dict[str, Any],
+    bracket_backtest: dict[str, Any],
+) -> None:
+    st.subheader("3) Men Matchup Explainer")
+    st.caption("Select a game from the 2026 predicted bracket or the 2025 backtest to see the model breakdown.")
+
+    options = _men_explainer_options(predicted_bracket_current=predicted_bracket_current, bracket_backtest=bracket_backtest)
+    if options.empty:
+        st.info("No men matchup explanations are available yet.")
+        return
+
+    c1, c2, c3 = st.columns([1.2, 1.0, 2.6])
+    source_label = c1.selectbox(
+        "Bracket",
+        options=options["source_label"].drop_duplicates().tolist(),
+        index=0,
+        key="men_matchup_explainer_source",
+    )
+    source_subset = options[options["source_label"] == source_label].copy()
+    round_label = c2.selectbox(
+        "Round",
+        options=source_subset["round_label"].drop_duplicates().tolist(),
+        index=0,
+        key="men_matchup_explainer_round",
+    )
+    round_subset = source_subset[source_subset["round_label"] == round_label].copy()
+    matchup_idx = c3.selectbox(
+        "Matchup",
+        options=round_subset.index.tolist(),
+        format_func=lambda idx: str(round_subset.loc[idx, "label"]),
+        key="men_matchup_explainer_matchup",
+    )
+    selected = round_subset.loc[int(matchup_idx)]
+    explanation = build_men_matchup_explanation(
+        source_key=str(selected["source_key"]),
+        team_low_id=int(selected["team_low_id"]),
+        team_high_id=int(selected["team_high_id"]),
+    )
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Predicted Winner", str(explanation.get("predicted_winner_name", "n/a")))
+    m2.metric("Winner Prob (Cal)", f"{float(explanation.get('winner_prob_calibrated', 0.0)):.1%}")
+    m3.metric("Winner Prob (Raw)", f"{float(explanation.get('winner_prob_raw', 0.0)):.1%}")
+    m4.metric("Pick Rule", _pick_rule_label(str(explanation.get("pick_rule", "n/a"))))
+    if str(selected["source_key"]) == SOURCE_2025:
+        actual_label = explanation.get("actual_winner_name") or "Did not occur"
+        m5.metric("Actual 2025 Result", str(actual_label))
+    else:
+        m5.metric("Calibration", str(explanation.get("calibration", "n/a")))
+
+    if str(selected["source_key"]) == SOURCE_2025:
+        if explanation.get("actual_matchup_occurred"):
+            st.caption(
+                f"This exact matchup happened in the actual 2025 tournament. "
+                f"Squared error for this game was {float(explanation.get('squared_error', 0.0)):.6f}."
+            )
+        else:
+            st.caption("This exact matchup never happened in the actual 2025 tournament, so there is no realized winner or game-level error for it.")
+
+    st.info(str(explanation.get("summary", "")))
+
+    agreement_df = _named_agreement_df(explanation)
+    if not agreement_df.empty:
+        st.caption("Model agreement")
+        prob_cols = [c for c in agreement_df.columns if c.startswith("P(")]
+        st.dataframe(
+            agreement_df.style.format({col: "{:.3f}" for col in prob_cols}),
+            width="stretch",
+        )
+
+    comparison_df = _named_matchup_df(pd.DataFrame(explanation.get("team_comparison", [])), explanation)
+    if not comparison_df.empty:
+        st.caption("Team snapshot comparison")
+        st.dataframe(comparison_df, width="stretch")
+
+    differences_df = _named_matchup_df(pd.DataFrame(explanation.get("top_differences", [])), explanation)
+    if not differences_df.empty:
+        st.caption("Largest measured differences in this matchup")
+        st.dataframe(differences_df, width="stretch")
+
+
 def _render_pipeline_view(
     *,
     snapshot: dict[str, Any],
@@ -615,7 +797,35 @@ def _render_pipeline_view(
             width="stretch",
         )
 
-    st.subheader("3) Explainability")
+    st.subheader("3) Feature Dictionary")
+    genders = [g for g in ["M", "W"] if not train_df.empty and g in set(train_df["gender"].astype(str))]
+    if not genders:
+        genders = ["M", "W"]
+    selected_gender = st.radio(
+        "Feature dictionary gender",
+        options=genders,
+        index=0,
+        horizontal=True,
+        key="feature_dictionary_gender",
+    )
+    feature_dict_df = _active_feature_dictionary_df(selected_gender)
+    if feature_dict_df.empty:
+        st.info(f"No saved model bundle found for {selected_gender}, so the active feature dictionary is unavailable.")
+    else:
+        enabled_families = snapshot.get("feature_families", {}).get(selected_gender, {})
+        if isinstance(enabled_families, dict):
+            enabled_family_names = [name for name, enabled in enabled_families.items() if bool(enabled)]
+            family_text = ", ".join(sorted(enabled_family_names)) if enabled_family_names else "baseline only"
+            st.caption(
+                f"This dictionary reflects the active features in the saved {selected_gender} model bundle. "
+                f"Enabled feature families: {family_text}."
+            )
+        top = st.columns(2)
+        top[0].metric("Active Features", str(len(feature_dict_df)))
+        top[1].metric("Unique Categories", str(int(feature_dict_df["Category"].nunique())))
+        st.dataframe(feature_dict_df, width="stretch")
+
+    st.subheader("4) Explainability")
     for gender in ["M", "W"]:
         report = explainability.get(gender, {})
         st.markdown(f"**{gender} Explainability**")
@@ -656,7 +866,7 @@ def _render_pipeline_view(
                 if path and Path(path).exists():
                     st.image(str(path), caption=f"{model_name} {key.replace('_', ' ')}", use_container_width=True)
 
-    st.subheader("4) Prediction Visualization")
+    st.subheader("5) Prediction Visualization")
     if submission_seeded.empty:
         st.info("No submission file found in latest snapshot.")
     else:
@@ -721,7 +931,7 @@ def _render_pipeline_view(
             width="stretch",
         )
 
-    st.subheader("5) How Brier Score Is Calculated")
+    st.subheader("6) How Brier Score Is Calculated")
     st.code("Brier = mean((y_pred - y_true)^2)", language="text")
     st.caption(
         "Lower is better. Perfect predictions have Brier = 0.0. "
@@ -807,6 +1017,7 @@ def _render_bracket_center(
         "Winners follow calibrated probabilities, with exact 0.5 ties broken by the raw pre-calibration model score."
     )
     sub_path = snapshot.get("submission", {}).get("path")
+    predicted_bracket = {"genders": {}}
     if not sub_path or not Path(sub_path).exists():
         st.info("No latest submission file found in the snapshot. Run `make submit` and `make observe`.")
     else:
@@ -893,14 +1104,7 @@ def _render_bracket_center(
                     st.info(f"No predicted bracket rows for {gender}.")
                 else:
                     if "Pick Rule" in pred_df.columns:
-                        pred_df["Pick Rule"] = pred_df["Pick Rule"].replace(
-                            {
-                                "calibrated": "Calibrated",
-                                "raw_tiebreak": "Raw tie-break",
-                                "low_team_id_fallback": "Fallback",
-                                "actual_outcome": "Actual",
-                            }
-                        )
+                        pred_df["Pick Rule"] = pred_df["Pick Rule"].map(_pick_rule_label)
                     st.dataframe(pred_df, width="stretch")
 
     st.subheader("2) 2025 Bracket Retrospective")
@@ -967,6 +1171,11 @@ def _render_bracket_center(
                 brier_df = pd.DataFrame(brier_rows).sort_values("Round", key=lambda s: s.map(_round_sort_key))
                 st.caption("Per-round Brier (realized 2025 bracket games)")
                 st.dataframe(brier_df, width="stretch")
+
+    _render_men_matchup_explainer(
+        predicted_bracket_current=predicted_bracket,
+        bracket_backtest=bracket_backtest,
+    )
 
 
 def main() -> None:

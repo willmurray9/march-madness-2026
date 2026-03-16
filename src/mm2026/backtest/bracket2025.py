@@ -232,6 +232,24 @@ def _predict_low_win_prob(
     team_a: int,
     team_b: int,
 ) -> dict[str, Any]:
+    low, high, feat = _build_matchup_feature_frame(
+        snapshot=snapshot,
+        season=season,
+        gender=gender,
+        team_a=team_a,
+        team_b=team_b,
+    )
+    raw_pred, pred = predict_gender_with_raw(bundle, feat, model_cfg=model_cfg)
+    return _prediction_payload(low=low, high=high, pred=float(pred[0]), raw_pred=float(raw_pred[0]))
+
+
+def _build_matchup_feature_frame(
+    snapshot: pd.DataFrame,
+    season: int,
+    gender: str,
+    team_a: int,
+    team_b: int,
+) -> tuple[int, int, pd.DataFrame]:
     low = int(min(team_a, team_b))
     high = int(max(team_a, team_b))
     matchup = pd.DataFrame(
@@ -271,9 +289,7 @@ def _predict_low_win_prob(
     feat["diff_elo_seed_interaction"] = feat["diff_elo_rating"] * feat["diff_seed_num"]
     diff_cols = [c for c in feat.columns if c.startswith("diff_")]
     feat[diff_cols] = feat[diff_cols].fillna(0.0)
-
-    raw_pred, pred = predict_gender_with_raw(bundle, feat, model_cfg=model_cfg)
-    return _prediction_payload(low=low, high=high, pred=float(pred[0]), raw_pred=float(raw_pred[0]))
+    return low, high, feat
 
 
 def _submission_prob_map(
