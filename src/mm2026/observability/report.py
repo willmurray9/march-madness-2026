@@ -10,7 +10,7 @@ import pandas as pd
 
 from mm2026.backtest.bracket2025 import run_bracket_backtest_2025
 from mm2026.observability.explainability import run as run_explainability
-from mm2026.utils.config import load_all_configs
+from mm2026.utils.config import load_all_configs, resolve_feature_families
 from mm2026.utils.io import ensure_dir, read_csv, write_csv, write_json
 
 
@@ -146,15 +146,19 @@ def _train_reports(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _feature_families(cfg: dict[str, Any]) -> dict[str, bool]:
-    families = cfg.get("features", {}).get("feature_families", {})
-    keys = ["advanced_rates", "sos_adjusted", "volatility", "trend", "elo_upgrades"]
-    return {k: bool(families.get(k, False)) for k in keys}
+def _feature_families_by_gender(cfg: dict[str, Any]) -> dict[str, dict[str, bool]]:
+    feat_cfg = cfg.get("features", {})
+    genders = cfg.get("data", {}).get("genders", ["M", "W"])
+    return {gender: resolve_feature_families(feat_cfg, gender) for gender in genders}
 
 
 def _family_signature(families: dict[str, bool]) -> str:
     parts = [f"{k}={int(v)}" for k, v in sorted(families.items())]
     return "|".join(parts)
+
+
+def _family_signature_by_gender(families_by_gender: dict[str, dict[str, bool]]) -> str:
+    return "||".join(f"{gender}:{_family_signature(families)}" for gender, families in sorted(families_by_gender.items()))
 
 
 def _baseline_signature() -> str:
@@ -182,7 +186,9 @@ def _find_baseline_snapshot(
     df = read_csv(runs_idx)
     if df.empty:
         return None, {}
-    sig_col = "feature_family_signature"
+    sig_col = f"{gender.lower()}_feature_family_signature"
+    if sig_col not in df.columns:
+        sig_col = "feature_family_signature"
     if sig_col not in df.columns:
         return None, {}
     oof_col = "m_oof_brier" if gender == "M" else "w_oof_brier"
@@ -292,8 +298,8 @@ def run() -> None:
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     train_reports = _train_reports(cfg)
-    families = _feature_families(cfg)
-    family_sig = _family_signature(families)
+    families_by_gender = _feature_families_by_gender(cfg)
+    family_sig = _family_signature_by_gender(families_by_gender)
     baseline_sig = _baseline_signature()
     gates = cfg.get("train", {}).get("promotion_gates", {})
     explainability_reports = run_explainability(cfg)
@@ -320,9 +326,15 @@ def run() -> None:
     payload = {
         "run_id": stamp,
         "generated_at_utc": stamp,
-        "feature_families": families,
+        "feature_families": families_by_gender,
         "feature_family_signature": family_sig,
-        "is_baseline_feature_set": family_sig == baseline_sig,
+        "feature_family_signatures_by_gender": {
+            gender: _family_signature(families)
+            for gender, families in families_by_gender.items()
+        },
+        "is_baseline_feature_set": all(
+            _family_signature(families) == baseline_sig for families in families_by_gender.values()
+        ),
         "config_hashes": _config_hashes(),
         "artifacts_dir": str(artifacts_dir),
         "file_summaries": file_summaries,
@@ -376,8 +388,12 @@ def run() -> None:
         "m_calibration": men.get("calibration"),
         "w_calibration": women.get("calibration"),
         "feature_family_signature": family_sig,
-        "feature_families_json": json.dumps(families, sort_keys=True),
-        "is_baseline_feature_set": family_sig == baseline_sig,
+        "m_feature_family_signature": _family_signature(families_by_gender.get("M", {})),
+        "w_feature_family_signature": _family_signature(families_by_gender.get("W", {})),
+        "feature_families_json": json.dumps(families_by_gender, sort_keys=True),
+        "is_baseline_feature_set": all(
+            _family_signature(families) == baseline_sig for families in families_by_gender.values()
+        ),
         "baseline_run_m": baseline_runs.get("M"),
         "baseline_run_w": baseline_runs.get("W"),
         "m_lift_vs_baseline": promotions.get("M", {}).get("lift"),

@@ -15,8 +15,25 @@ def _validate_submission(df: pd.DataFrame) -> None:
         raise ValueError("Submission must contain exactly ID and Pred columns.")
     if df["ID"].isna().any() or df["Pred"].isna().any():
         raise ValueError("Submission contains null values.")
+    if df["ID"].duplicated().any():
+        raise ValueError("Submission contains duplicate IDs.")
     if ((df["Pred"] < 0) | (df["Pred"] > 1)).any():
         raise ValueError("Pred values must be in [0, 1].")
+
+
+def _validate_submission_against_sample(submission: pd.DataFrame, sample: pd.DataFrame) -> None:
+    if sample.empty:
+        return
+    if sample["ID"].duplicated().any():
+        raise ValueError("Sample submission contains duplicate IDs.")
+    if len(submission) != len(sample):
+        raise ValueError(f"Submission row count mismatch: got={len(submission)}, expected={len(sample)}")
+    expected_ids = set(sample["ID"].tolist())
+    got_ids = set(submission["ID"].tolist())
+    if expected_ids != got_ids:
+        missing = len(expected_ids - got_ids)
+        extra = len(got_ids - expected_ids)
+        raise ValueError(f"Submission ID mismatch: missing={missing}, extra={extra}")
 
 
 def run() -> None:
@@ -48,13 +65,7 @@ def run() -> None:
 
     sample_cfg_path = Path(data_cfg["sample_submission_file"])
     sample = read_csv(sample_cfg_path)
-    if not sample.empty:
-        expected_ids = set(sample["ID"].tolist())
-        got_ids = set(submission["ID"].tolist())
-        if expected_ids != got_ids:
-            missing = len(expected_ids - got_ids)
-            extra = len(got_ids - expected_ids)
-            raise ValueError(f"Submission ID mismatch: missing={missing}, extra={extra}")
+    _validate_submission_against_sample(submission, sample)
 
     submission = submission.sort_values("ID").reset_index(drop=True)
     _validate_submission(submission)

@@ -5,11 +5,15 @@ rolling_windows:
 inference_daynum_cutoff: 133
 
 feature_families:
-  advanced_rates: true
-  sos_adjusted: true
-  volatility: true
-  trend: true
-  elo_upgrades: true
+  advanced_rates: false
+  sos_adjusted: false
+  volatility: false
+  trend: false
+  elo_upgrades: false
+
+feature_families_by_gender:
+  M:
+    trend: true
 
 elo:
   base_rating: 1500.0

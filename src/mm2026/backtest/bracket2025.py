@@ -16,6 +16,7 @@ from mm2026.features.build import (
     _prep_seeds,
 )
 from mm2026.models.pipeline import predict_gender, train_gender
+from mm2026.utils.config import resolve_data_seasons, resolve_feature_families
 from mm2026.utils.io import read_csv
 
 ROUND_LABELS = {
@@ -75,13 +76,7 @@ def _load_snapshot_for_2025(cfg: dict[str, Any], gender: str) -> pd.DataFrame:
         dynamic_k_max=float(feat_cfg["elo"].get("dynamic_k_max", 40.0)),
         dynamic_k_margin_scale=float(feat_cfg["elo"].get("dynamic_k_margin_scale", 6.0)),
     )
-    feature_families = {
-        "advanced_rates": bool(feat_cfg.get("feature_families", {}).get("advanced_rates", False)),
-        "sos_adjusted": bool(feat_cfg.get("feature_families", {}).get("sos_adjusted", False)),
-        "volatility": bool(feat_cfg.get("feature_families", {}).get("volatility", False)),
-        "trend": bool(feat_cfg.get("feature_families", {}).get("trend", False)),
-        "elo_upgrades": bool(feat_cfg.get("feature_families", {}).get("elo_upgrades", False)),
-    }
+    feature_families = resolve_feature_families(feat_cfg, gender)
     if not feature_families["elo_upgrades"]:
         elo_cfg.use_margin_multiplier = False
         elo_cfg.use_dynamic_k = False
@@ -127,10 +122,16 @@ def _train_bundle_for_2025(cfg: dict[str, Any], gender: str) -> Any:
     data_cfg = cfg["data"]
     model_cfg = cfg["models"]
     train_cfg = deepcopy(cfg["train"])
+    season_cfg = resolve_data_seasons(data_cfg)
     features_dir = Path(data_cfg["features_dir"])
 
     train_df = read_csv(features_dir / f"{gender}_train_features.csv")
-    train_df = train_df[train_df["Season"] <= 2024].copy()
+    train_df = train_df[
+        train_df["Season"].between(
+            season_cfg["min_train_season"],
+            min(season_cfg["max_train_season"], 2024),
+        )
+    ].copy()
     if train_df.empty:
         raise ValueError(f"{gender}: no training rows with Season <= 2024.")
 
@@ -405,11 +406,12 @@ def _run_gender(cfg: dict[str, Any], gender: str) -> dict[str, Any]:
 
 
 def run_bracket_backtest_2025(cfg: dict[str, Any]) -> dict[str, Any]:
+    season_cfg = resolve_data_seasons(cfg["data"])
     payload: dict[str, Any] = {
         "generated_at_utc": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
         "season": 2025,
         "daynum_cutoff": int(cfg["features"].get("inference_daynum_cutoff", 133)),
-        "train_max_season": 2024,
+        "train_max_season": min(season_cfg["max_train_season"], 2024),
         "genders": {},
     }
     for gender in cfg["data"].get("genders", ["M", "W"]):

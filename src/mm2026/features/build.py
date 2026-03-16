@@ -7,7 +7,7 @@ import re
 import numpy as np
 import pandas as pd
 
-from mm2026.utils.config import load_all_configs
+from mm2026.utils.config import load_all_configs, resolve_data_seasons, resolve_feature_families
 from mm2026.utils.ids import parse_matchup_id
 from mm2026.utils.io import ensure_dir, read_csv, write_csv
 
@@ -320,13 +320,20 @@ def _build_tourney_train_matchups(tourney_df: pd.DataFrame, gender: str) -> pd.D
     return out[["Season", "TeamID_low", "TeamID_high", "Gender", "target", "DayNumCutoff"]]
 
 
-def _build_stage2_matchups(sample_df: pd.DataFrame, gender: str, inference_daynum_cutoff: int) -> pd.DataFrame:
+def _build_stage2_matchups(
+    sample_df: pd.DataFrame,
+    gender: str,
+    inference_daynum_cutoff: int,
+    predict_season: int,
+) -> pd.DataFrame:
     if sample_df.empty:
         return pd.DataFrame()
 
     rows = []
     for row in sample_df.itertuples(index=False):
         mid = parse_matchup_id(row.ID)
+        if mid.season != predict_season:
+            continue
         if gender == "M" and not (1000 <= mid.team_low < 2000 and 1000 <= mid.team_high < 2000):
             continue
         if gender == "W" and not (3000 <= mid.team_low < 4000 and 3000 <= mid.team_high < 4000):
@@ -437,6 +444,7 @@ def run() -> None:
     cfg = load_all_configs()
     data_cfg = cfg["data"]
     feat_cfg = cfg["features"]
+    season_cfg = resolve_data_seasons(data_cfg)
 
     raw_dir = Path(data_cfg["raw_snapshot_dir"])
     curated_dir = Path(data_cfg["curated_dir"])
@@ -454,21 +462,17 @@ def run() -> None:
         dynamic_k_max=float(feat_cfg["elo"].get("dynamic_k_max", 40.0)),
         dynamic_k_margin_scale=float(feat_cfg["elo"].get("dynamic_k_margin_scale", 6.0)),
     )
-    feature_families = {
-        "advanced_rates": bool(feat_cfg.get("feature_families", {}).get("advanced_rates", False)),
-        "sos_adjusted": bool(feat_cfg.get("feature_families", {}).get("sos_adjusted", False)),
-        "volatility": bool(feat_cfg.get("feature_families", {}).get("volatility", False)),
-        "trend": bool(feat_cfg.get("feature_families", {}).get("trend", False)),
-        "elo_upgrades": bool(feat_cfg.get("feature_families", {}).get("elo_upgrades", False)),
-    }
-    if not feature_families["elo_upgrades"]:
-        elo_cfg.use_margin_multiplier = False
-        elo_cfg.use_dynamic_k = False
     inference_daynum_cutoff = int(feat_cfg.get("inference_daynum_cutoff", 133))
 
     sample_df = read_csv(curated_dir / "SampleSubmissionConfigured.csv")
 
     for gender in data_cfg.get("genders", ["M", "W"]):
+        feature_families = resolve_feature_families(feat_cfg, gender)
+        gender_elo_cfg = EloConfig(**vars(elo_cfg))
+        if not feature_families["elo_upgrades"]:
+            gender_elo_cfg.use_margin_multiplier = False
+            gender_elo_cfg.use_dynamic_k = False
+
         reg_long = read_csv(curated_dir / f"{gender}_regular_season_long.csv")
         tourney = read_csv(curated_dir / f"{gender}_tourney_compact.csv")
         seeds_raw = read_csv(curated_dir / f"{gender}_tourney_seeds.csv")
@@ -480,7 +484,7 @@ def run() -> None:
 
         reg_feat = _add_efficiency_features(reg_long)
         reg_roll = _add_rolling_features(reg_feat, feat_cfg["rolling_windows"], feature_families=feature_families)
-        elo_hist = _compute_elo_history_from_compact(compact, elo_cfg)
+        elo_hist = _compute_elo_history_from_compact(compact, gender_elo_cfg)
         seeds = _prep_seeds(seeds_raw)
 
         train_matchups = _build_tourney_train_matchups(tourney, gender)
@@ -489,16 +493,29 @@ def run() -> None:
             rolling_df=reg_roll,
             elo_hist_df=elo_hist,
             seeds_df=seeds,
-            elo_base=elo_cfg.base_rating,
+            elo_base=gender_elo_cfg.base_rating,
             feature_families=feature_families,
         )
-        infer_matchups = _build_stage2_matchups(sample_df, gender, inference_daynum_cutoff=inference_daynum_cutoff)
+        if not train_features.empty and "Season" in train_features.columns:
+            train_features = train_features[
+                train_features["Season"].between(
+                    season_cfg["min_train_season"],
+                    season_cfg["max_train_season"],
+                )
+            ].copy()
+
+        infer_matchups = _build_stage2_matchups(
+            sample_df,
+            gender,
+            inference_daynum_cutoff=inference_daynum_cutoff,
+            predict_season=season_cfg["predict_season"],
+        )
         infer_features = _build_matchup_features_with_cutoff(
             matchups=infer_matchups,
             rolling_df=reg_roll,
             elo_hist_df=elo_hist,
             seeds_df=seeds,
-            elo_base=elo_cfg.base_rating,
+            elo_base=gender_elo_cfg.base_rating,
             feature_families=feature_families,
         )
 
@@ -511,7 +528,7 @@ def run() -> None:
                     seeds_df=seeds,
                     season=int(season),
                     day_cutoff=inference_daynum_cutoff,
-                    elo_base=elo_cfg.base_rating,
+                    elo_base=gender_elo_cfg.base_rating,
                 )
             )
         snapshot = pd.concat(latest_snapshot_parts, ignore_index=True) if latest_snapshot_parts else pd.DataFrame()

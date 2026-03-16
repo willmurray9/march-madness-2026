@@ -3,6 +3,7 @@ import pandas as pd
 from mm2026.features.build import (
     _add_efficiency_features,
     _add_rolling_features,
+    _build_stage2_matchups,
     _matchup_features_for_snapshot,
     _build_tourney_train_matchups,
     _prep_seeds,
@@ -148,3 +149,21 @@ def test_matchup_feature_family_filters_drop_disabled_columns() -> None:
     assert "diff_opp_net_eff_season_mean" not in cols
     assert all("_vol_" not in c for c in cols)
     assert all("_trend_" not in c for c in cols)
+
+
+def test_build_stage2_matchups_filters_to_predict_season_and_gender() -> None:
+    sample = pd.DataFrame(
+        {
+            "ID": [
+                "2025_1101_1102",
+                "2026_1101_1102",
+                "2026_3101_3102",
+            ]
+        }
+    )
+    men = _build_stage2_matchups(sample, "M", inference_daynum_cutoff=133, predict_season=2026)
+    women = _build_stage2_matchups(sample, "W", inference_daynum_cutoff=133, predict_season=2026)
+
+    assert men["ID"].tolist() == ["2026_1101_1102"]
+    assert women["ID"].tolist() == ["2026_3101_3102"]
+    assert men["DayNumCutoff"].tolist() == [133]

@@ -2,7 +2,7 @@ raw_snapshot_dir: data/raw/latest
 curated_dir: data/curated/latest
 features_dir: data/features/latest
 artifacts_dir: artifacts
-sample_submission_file: data/raw/latest/SampleSubmissionStage1.csv
+sample_submission_file: data/raw/latest/SampleSubmissionStage2.csv
 
 seasons:
   min_train_season: 2003

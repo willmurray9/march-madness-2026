@@ -458,11 +458,19 @@ def main() -> None:
 
     fam = snapshot.get("feature_families", {})
     if isinstance(fam, dict):
-        enabled = [k for k, v in fam.items() if bool(v)]
-        st.caption(
-            "Feature families: "
-            + (", ".join(sorted(enabled)) if enabled else "baseline (all candidate families disabled)")
-        )
+        values = list(fam.values())
+        if values and all(isinstance(v, dict) for v in values):
+            parts = []
+            for gender, families in sorted(fam.items()):
+                enabled = [k for k, v in families.items() if bool(v)]
+                parts.append(f"{gender}: " + (", ".join(sorted(enabled)) if enabled else "baseline"))
+            st.caption("Feature families: " + " | ".join(parts))
+        else:
+            enabled = [k for k, v in fam.items() if bool(v)]
+            st.caption(
+                "Feature families: "
+                + (", ".join(sorted(enabled)) if enabled else "baseline (all candidate families disabled)")
+            )
 
     st.subheader("1) Dataset Overview")
     if dataset_df.empty:
