@@ -387,6 +387,27 @@ def predict_gender(bundle: ModelBundle, features_df: pd.DataFrame, model_cfg: di
     return np.clip(pred, 0.0, 1.0)
 
 
+def predict_gender_with_raw(
+    bundle: ModelBundle,
+    features_df: pd.DataFrame,
+    model_cfg: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray]:
+    X = features_df.reindex(columns=bundle.feature_cols).fillna(0.0)
+    elo_scale = model_cfg["base_models"]["elo"]["scale"]
+    elo_diff = X["diff_elo_rating"].to_numpy() if "diff_elo_rating" in X.columns else np.zeros(len(X))
+
+    enabled_models = [col.replace("p_", "") for col in bundle.base_prob_cols]
+    base_pred = _predict_base(bundle.base_models, enabled_models=enabled_models, X=X, elo_diff=elo_diff, elo_scale=elo_scale)
+    raw_blend = _blend_predictions(base_pred, bundle.blend_weights, bundle.base_prob_cols)
+
+    if bundle.champion_raw_model == "meta" and bundle.meta_model is not None:
+        raw = bundle.meta_model.predict_proba(base_pred[bundle.base_prob_cols])[:, 1]
+    else:
+        raw = raw_blend
+    pred = _apply_calibration(raw, bundle.calibration, bundle.calibrator)
+    return np.clip(raw, 0.0, 1.0), np.clip(pred, 0.0, 1.0)
+
+
 def save_bundle(bundle: ModelBundle, path: str | Path) -> None:
     payload = {
         "feature_cols": bundle.feature_cols,

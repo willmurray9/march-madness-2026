@@ -77,6 +77,62 @@ def test_simulate_bracket_resolves_dependency_slots(monkeypatch) -> None:
     assert all(0.0 <= float(g["pred_team_low_win"]) <= 1.0 for g in games)
 
 
+def test_simulate_bracket_uses_raw_tiebreak_toward_high_team() -> None:
+    slots = pd.DataFrame({"Slot": ["R1W1"], "StrongSeed": ["W01"], "WeakSeed": ["W16"]})
+    seed_to_team = {"W01": 1101, "W16": 1116}
+    team_names = {1101: "A", 1116: "B"}
+
+    games, winners = _simulate_bracket(
+        slots=slots,
+        seed_to_team=seed_to_team,
+        bundle=None,
+        model_cfg=None,
+        snapshot=None,
+        team_names=team_names,
+        gender="M",
+        actual_winners=None,
+        predict_matchup=lambda _a, _b: {
+            "team_low_id": 1101,
+            "team_high_id": 1116,
+            "pred_team_low_win": 0.5,
+            "pred_team_low_win_raw": 0.49,
+        },
+    )
+
+    assert winners["R1W1"] == 1116
+    assert games[0]["winner_decision_rule"] == "raw_tiebreak"
+    assert float(games[0]["pred_team_low_win"]) == 0.5
+    assert float(games[0]["pred_team_low_win_raw"]) == 0.49
+
+
+def test_simulate_bracket_uses_raw_tiebreak_toward_low_team() -> None:
+    slots = pd.DataFrame({"Slot": ["R1W1"], "StrongSeed": ["W01"], "WeakSeed": ["W16"]})
+    seed_to_team = {"W01": 1101, "W16": 1116}
+    team_names = {1101: "A", 1116: "B"}
+
+    games, winners = _simulate_bracket(
+        slots=slots,
+        seed_to_team=seed_to_team,
+        bundle=None,
+        model_cfg=None,
+        snapshot=None,
+        team_names=team_names,
+        gender="M",
+        actual_winners=None,
+        predict_matchup=lambda _a, _b: {
+            "team_low_id": 1101,
+            "team_high_id": 1116,
+            "pred_team_low_win": 0.5,
+            "pred_team_low_win_raw": 0.51,
+        },
+    )
+
+    assert winners["R1W1"] == 1101
+    assert games[0]["winner_decision_rule"] == "raw_tiebreak"
+    assert float(games[0]["pred_team_low_win"]) == 0.5
+    assert float(games[0]["pred_team_low_win_raw"]) == 0.51
+
+
 def test_actual_winner_map_has_championship_team_2025() -> None:
     raw_dir = Path("data/raw/latest")
     m_map = _actual_winner_map_for_2025(raw_dir, "M")
@@ -101,3 +157,83 @@ def test_metrics_round_weighting_matches_overall() -> None:
     n_round = m["games_by_round"]
     weighted = sum(float(by_round[r]) * int(n_round[r]) for r in by_round) / sum(int(n_round[r]) for r in by_round)
     assert abs(overall - weighted) < 1e-12
+
+
+def test_metrics_final_four_overlap_uses_semifinalists_not_semifinal_winners() -> None:
+    predicted_games = [
+        {
+            "slot": "R5WX",
+            "round_label": "Final Four",
+            "round_num": 5,
+            "slot_order": 0,
+            "team_low_id": 1,
+            "team_low_name": "Duke",
+            "team_high_id": 2,
+            "team_high_name": "Houston",
+            "winner_team_id": 1,
+        },
+        {
+            "slot": "R5YZ",
+            "round_label": "Final Four",
+            "round_num": 5,
+            "slot_order": 1,
+            "team_low_id": 3,
+            "team_low_name": "Auburn",
+            "team_high_id": 4,
+            "team_high_name": "Florida",
+            "winner_team_id": 3,
+        },
+        {
+            "slot": "R6CH",
+            "round_label": "Championship",
+            "round_num": 6,
+            "slot_order": 2,
+            "team_low_id": 1,
+            "team_low_name": "Duke",
+            "team_high_id": 3,
+            "team_high_name": "Auburn",
+            "winner_team_id": 1,
+        },
+    ]
+    actual_games = [
+        {
+            "slot": "R5WX",
+            "round_label": "Final Four",
+            "round_num": 5,
+            "slot_order": 0,
+            "team_low_id": 1,
+            "team_low_name": "Duke",
+            "team_high_id": 2,
+            "team_high_name": "Houston",
+            "winner_team_id": 2,
+            "squared_error": 0.25,
+        },
+        {
+            "slot": "R5YZ",
+            "round_label": "Final Four",
+            "round_num": 5,
+            "slot_order": 1,
+            "team_low_id": 3,
+            "team_low_name": "Auburn",
+            "team_high_id": 4,
+            "team_high_name": "Florida",
+            "winner_team_id": 4,
+            "squared_error": 0.25,
+        },
+        {
+            "slot": "R6CH",
+            "round_label": "Championship",
+            "round_num": 6,
+            "slot_order": 2,
+            "team_low_id": 2,
+            "team_low_name": "Houston",
+            "team_high_id": 4,
+            "team_high_name": "Florida",
+            "winner_team_id": 4,
+            "squared_error": 0.25,
+        },
+    ]
+
+    m = _metrics(predicted_games=predicted_games, actual_games=actual_games)
+    assert m["final_four_overlap_count"] == 4
+    assert m["title_game_overlap_count"] == 0

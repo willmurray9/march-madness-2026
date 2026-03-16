@@ -8,7 +8,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from mm2026.backtest.bracket2025 import run_current_bracket_forecast, run_submission_bracket_forecast
 from mm2026.models.pipeline import load_bundle, predict_gender
+from mm2026.utils.config import load_all_configs
 from mm2026.utils.ids import parse_matchup_id
 
 
@@ -281,6 +283,8 @@ def _bracket_table_df(rows: list[dict[str, Any]]) -> pd.DataFrame:
         "team_high_name",
         "team_high_seed",
         "pred_team_low_win",
+        "pred_team_low_win_raw",
+        "winner_decision_rule",
         "winner_team_name",
     ]
     keep = [c for c in keep if c in df.columns]
@@ -294,6 +298,8 @@ def _bracket_table_df(rows: list[dict[str, Any]]) -> pd.DataFrame:
         "team_high_name": "Team High",
         "team_high_seed": "High Seed",
         "pred_team_low_win": "P(Low Wins)",
+        "pred_team_low_win_raw": "Raw P(Low Wins)",
+        "winner_decision_rule": "Pick Rule",
         "winner_team_name": "Winner",
     }
     return out.rename(columns=rename)
@@ -424,31 +430,138 @@ def _brier_with_real_matchups(max_rows_per_gender: int = 6000) -> tuple[pd.DataF
     return pd.concat(out, ignore_index=True), warning_text
 
 
-def main() -> None:
-    st.set_page_config(page_title="MM2026 Observability", layout="wide")
-    st.title("MM2026 Modeling Overview")
-    st.caption("Datasets, modeling methods, prediction behavior, and Brier score calculation.")
+@st.cache_data
+def _build_submission_bracket(submission_path: str, season: int) -> dict[str, Any]:
+    return run_submission_bracket_forecast(submission_path=submission_path, raw_dir="data/raw/latest", season=season)
 
-    default_reports = Path("artifacts") / "reports"
-    reports_dir = Path(st.sidebar.text_input("Reports directory", str(default_reports)))
-    st.sidebar.markdown("Run `make observe` after data/features/train/submit to refresh.")
 
-    snapshot = _load_latest_snapshot(reports_dir)
-    if not snapshot:
-        st.error(f"No observability snapshot found in {reports_dir}.")
-        st.stop()
+@st.cache_data
+def _build_current_bracket(season: int) -> dict[str, Any]:
+    return run_current_bracket_forecast(cfg=load_all_configs(), season=season)
 
-    dataset_df = _dataset_overview_df(snapshot)
-    methods_df = _model_overview_df(snapshot)
-    submission_df = _load_submission_df(snapshot)
-    submission_enriched = _enrich_submission_rows(submission_df)
-    submission_seeded = _seeded_matchups_only(submission_enriched)
-    pred_hist = _prediction_summary(snapshot)
-    season_df = _season_rows(snapshot)
-    train_df = _train_rows(snapshot)
-    bracket_backtest = _load_bracket_backtest(snapshot)
-    explainability = {g: _load_explainability_payload(snapshot, g) for g in ["M", "W"]}
 
+def _team_names_for_round(rows: list[dict[str, Any]], round_num: int) -> list[str]:
+    if not rows:
+        return []
+    df = pd.DataFrame(rows)
+    if df.empty or "round_num" not in df.columns:
+        return []
+    sub = df[df["round_num"] == round_num].sort_values("slot_order")
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for row in sub.itertuples(index=False):
+        for name in [str(row.team_low_name), str(row.team_high_name)]:
+            if name in seen:
+                continue
+            seen.add(name)
+            ordered.append(name)
+    return ordered
+
+
+def _first_non_null(series: pd.Series) -> float | None:
+    non_null = series.dropna()
+    if non_null.empty:
+        return None
+    return float(non_null.iloc[0])
+
+
+def _power_rankings_df(
+    submission_enriched: pd.DataFrame,
+    gender: str,
+    bracket_summary: dict[str, Any] | None = None,
+) -> pd.DataFrame:
+    sub = submission_enriched[submission_enriched["Gender"] == gender].copy()
+    if sub.empty:
+        return pd.DataFrame()
+
+    low = pd.DataFrame(
+        {
+            "Season": sub["Season"],
+            "TeamID": sub["TeamLowID"],
+            "TeamName": sub["TeamLowName"],
+            "TeamSeed": sub["TeamLowSeed"],
+            "WinProb": sub["Pred"],
+            "OppIsSeeded": sub["TeamHighSeed"].notna(),
+        }
+    )
+    high = pd.DataFrame(
+        {
+            "Season": sub["Season"],
+            "TeamID": sub["TeamHighID"],
+            "TeamName": sub["TeamHighName"],
+            "TeamSeed": sub["TeamHighSeed"],
+            "WinProb": 1.0 - sub["Pred"],
+            "OppIsSeeded": sub["TeamLowSeed"].notna(),
+        }
+    )
+    long_df = pd.concat([low, high], ignore_index=True)
+
+    base = (
+        long_df.groupby(["Season", "TeamID", "TeamName"], as_index=False)
+        .agg(
+            GamesInMatrix=("WinProb", "size"),
+            AvgWinProbAll=("WinProb", "mean"),
+            ExpectedWinsAll=("WinProb", "sum"),
+            TeamSeed=("TeamSeed", _first_non_null),
+        )
+    )
+    seeded = (
+        long_df[long_df["OppIsSeeded"]]
+        .groupby(["Season", "TeamID", "TeamName"], as_index=False)
+        .agg(
+            TournamentOpps=("WinProb", "size"),
+            AvgWinProbVsTournament=("WinProb", "mean"),
+            ExpectedWinsVsTournament=("WinProb", "sum"),
+        )
+    )
+    out = base.merge(seeded, on=["Season", "TeamID", "TeamName"], how="left")
+    out["TournamentOpps"] = out["TournamentOpps"].fillna(0).astype(int)
+    out["TeamSeedDisplay"] = out["TeamSeed"].map(lambda x: f"{int(x):02d}" if pd.notna(x) else "")
+    out["IsTournamentTeam"] = out["TeamSeed"].notna()
+
+    final_four_ids = set((bracket_summary or {}).get("final_four_team_ids", []))
+    title_game_ids = set((bracket_summary or {}).get("title_game_team_ids", []))
+    champion_id = (bracket_summary or {}).get("champion_team_id")
+
+    def bracket_pick(team_id: int) -> str:
+        if champion_id is not None and int(team_id) == int(champion_id):
+            return "Champion"
+        if int(team_id) in title_game_ids:
+            return "Finalist"
+        if int(team_id) in final_four_ids:
+            return "Final Four"
+        if pd.notna(out.loc[out["TeamID"] == team_id, "TeamSeed"].iloc[0]):
+            return "Field"
+        return ""
+
+    out["BracketPick"] = out["TeamID"].map(bracket_pick)
+    out["AvgWinPctAll"] = 100.0 * out["AvgWinProbAll"]
+    out["AvgWinPctVsTournament"] = 100.0 * out["AvgWinProbVsTournament"]
+    out = out.sort_values(["AvgWinProbAll", "ExpectedWinsAll", "TeamName"], ascending=[False, False, True]).reset_index(drop=True)
+    out["Rk"] = out.index + 1
+
+    tourney = out[out["IsTournamentTeam"]].copy().reset_index(drop=True)
+    if not tourney.empty:
+        tourney["TournamentRk"] = tourney.index + 1
+    out = out.merge(
+        tourney[["TeamID", "TournamentRk"]],
+        on="TeamID",
+        how="left",
+    )
+    return out
+
+
+def _render_pipeline_view(
+    *,
+    snapshot: dict[str, Any],
+    dataset_df: pd.DataFrame,
+    methods_df: pd.DataFrame,
+    submission_enriched: pd.DataFrame,
+    submission_seeded: pd.DataFrame,
+    season_df: pd.DataFrame,
+    train_df: pd.DataFrame,
+    explainability: dict[str, dict[str, Any]],
+) -> None:
     top = st.columns(4)
     top[0].metric("Snapshot UTC", snapshot.get("generated_at_utc", "unknown"))
     top[1].metric("Datasets tracked", int(len(dataset_df)))
@@ -674,16 +787,137 @@ def main() -> None:
             width="stretch",
         )
 
-    st.subheader("6) 2025 Bracket Retrospective")
+
+def _render_bracket_center(
+    *,
+    snapshot: dict[str, Any],
+    bracket_backtest: dict[str, Any],
+    submission_enriched: pd.DataFrame,
+) -> None:
+    top = st.columns(4)
+    top[0].metric("Snapshot UTC", snapshot.get("generated_at_utc", "unknown"))
+    top[1].metric("Submission rows", int(len(submission_enriched)))
+    season = int(submission_enriched["Season"].max()) if not submission_enriched.empty else 2026
+    top[2].metric("Predicted Season", str(season))
+    top[3].metric("Bracket Mode", "Most likely")
+
+    st.subheader(f"1) {season} Predicted Bracket")
+    st.caption(
+        "Generated from the saved local model bundle plus official seeds and bracket slots. "
+        "Winners follow calibrated probabilities, with exact 0.5 ties broken by the raw pre-calibration model score."
+    )
+    sub_path = snapshot.get("submission", {}).get("path")
+    if not sub_path or not Path(sub_path).exists():
+        st.info("No latest submission file found in the snapshot. Run `make submit` and `make observe`.")
+    else:
+        predicted_bracket = _build_current_bracket(season)
+        submission_bracket = _build_submission_bracket(str(sub_path), season)
+        tabs = st.tabs(["Men", "Women"])
+        for gender, tab in zip(["M", "W"], tabs):
+            with tab:
+                gender_payload = predicted_bracket.get("genders", {}).get(gender, {})
+                source_label = "local model"
+                if not gender_payload or gender_payload.get("status") != "ok":
+                    gender_payload = submission_bracket.get("genders", {}).get(gender, {})
+                    source_label = "submission fallback"
+                if not gender_payload or gender_payload.get("status") != "ok":
+                    st.info(f"No predicted bracket available for {gender}.")
+                    continue
+                summary = gender_payload.get("summary", {})
+                rankings = _power_rankings_df(submission_enriched, gender, bracket_summary=summary)
+                st.caption(f"Bracket source: {source_label}.")
+                st.caption(
+                    "Power rankings are derived from the latest submission matrix: for each team, "
+                    "we average its predicted win probability across all possible matchups."
+                )
+                top_n = int(
+                    st.slider(
+                        "Top teams to show",
+                        min_value=10,
+                        max_value=50,
+                        value=25,
+                        step=5,
+                        key=f"{gender.lower()}_power_rank_n",
+                    )
+                )
+                if rankings.empty:
+                    st.info(f"No power rankings available for {gender}.")
+                else:
+                    display = rankings[
+                        [
+                            "Rk",
+                            "TournamentRk",
+                            "TeamName",
+                            "TeamSeedDisplay",
+                            "BracketPick",
+                            "AvgWinPctAll",
+                            "ExpectedWinsAll",
+                            "AvgWinPctVsTournament",
+                            "ExpectedWinsVsTournament",
+                        ]
+                    ].head(top_n).rename(
+                        columns={
+                            "Rk": "Overall Rk",
+                            "TournamentRk": "Tourney Rk",
+                            "TeamName": "Team",
+                            "TeamSeedDisplay": "Seed",
+                            "BracketPick": "Predicted Finish",
+                            "AvgWinPctAll": "Avg Win % vs All",
+                            "ExpectedWinsAll": "Expected Wins vs All",
+                            "AvgWinPctVsTournament": "Avg Win % vs Tourney",
+                            "ExpectedWinsVsTournament": "Expected Wins vs Tourney",
+                        }
+                    )
+                    st.dataframe(
+                        display.style.format(
+                            {
+                                "Avg Win % vs All": "{:.1f}",
+                                "Expected Wins vs All": "{:.1f}",
+                                "Avg Win % vs Tourney": "{:.1f}",
+                                "Expected Wins vs Tourney": "{:.1f}",
+                            },
+                            na_rep="",
+                        ),
+                        width="stretch",
+                    )
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Champion", str(summary.get("champion_team_name", "n/a")))
+                c2.metric("Games", str(summary.get("games_total", "n/a")))
+                c3.metric("Raw Tie-Breaks", str(summary.get("raw_tiebreak_games", 0)))
+                final_four = summary.get("final_four_team_names", [])
+                title_game = summary.get("title_game_team_names", [])
+                st.caption("Final Four: " + (", ".join(final_four) if final_four else "n/a"))
+                st.caption("Title Game: " + (" vs ".join(title_game) if title_game else "n/a"))
+                pred_df = _bracket_table_df(gender_payload.get("predicted_games", []))
+                if pred_df.empty:
+                    st.info(f"No predicted bracket rows for {gender}.")
+                else:
+                    if "Pick Rule" in pred_df.columns:
+                        pred_df["Pick Rule"] = pred_df["Pick Rule"].replace(
+                            {
+                                "calibrated": "Calibrated",
+                                "raw_tiebreak": "Raw tie-break",
+                                "low_team_id_fallback": "Fallback",
+                                "actual_outcome": "Actual",
+                            }
+                        )
+                    st.dataframe(pred_df, width="stretch")
+
+    st.subheader("2) 2025 Bracket Retrospective")
     if not bracket_backtest:
         st.info("No 2025 bracket backtest artifact found. Run `make observe`.")
-    else:
-        season = bracket_backtest.get("season", 2025)
-        st.caption(
-            f"Leakage-safe setup: train on seasons <= 2024; infer season {season} bracket with cutoff DayNum "
-            f"{bracket_backtest.get('daynum_cutoff', 'n/a')}."
-        )
-        for gender in ["M", "W"]:
+        return
+
+    season = bracket_backtest.get("season", 2025)
+    st.caption(
+        f"Leakage-safe setup: train on seasons <= 2024; infer season {season} bracket with cutoff DayNum "
+        f"{bracket_backtest.get('daynum_cutoff', 'n/a')}."
+    )
+    st.caption("`Final Four overlap` counts the four semifinalists. `Title game overlap` counts the two championship participants.")
+
+    tabs = st.tabs(["Men", "Women"])
+    for gender, tab in zip(["M", "W"], tabs):
+        with tab:
             gender_payload = bracket_backtest.get("genders", {}).get(gender, {})
             if not gender_payload:
                 st.warning(f"No backtest payload for {gender}.")
@@ -692,14 +926,19 @@ def main() -> None:
             predicted_games = gender_payload.get("predicted_games", [])
             actual_games = gender_payload.get("actual_games", [])
 
-            st.markdown(f"**{gender} Tournament**")
-            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1, mc2, mc3, mc4, mc5 = st.columns(5)
             brier_overall = metrics.get("brier_overall")
-            mc1.metric("Brier (overall)", f"{brier_overall:.6f}" if isinstance(brier_overall, (int, float)) else "n/a")
+            mc1.metric("Brier", f"{brier_overall:.6f}" if isinstance(brier_overall, (int, float)) else "n/a")
             champ_hit = metrics.get("champion_hit")
             mc2.metric("Champion Hit", "n/a" if champ_hit is None else ("Yes" if champ_hit else "No"))
             mc3.metric("Final Four Overlap", str(metrics.get("final_four_overlap_count", "n/a")))
-            mc4.metric("Games Scored", str(metrics.get("games_total", "n/a")))
+            mc4.metric("Title Game Overlap", str(metrics.get("title_game_overlap_count", "n/a")))
+            mc5.metric("Games Scored", str(metrics.get("games_total", "n/a")))
+
+            st.caption("Predicted Final Four: " + ", ".join(_team_names_for_round(predicted_games, 5)))
+            st.caption("Actual Final Four: " + ", ".join(_team_names_for_round(actual_games, 5)))
+            st.caption("Predicted Title Game: " + " vs ".join(_team_names_for_round(predicted_games, 6)))
+            st.caption("Actual Title Game: " + " vs ".join(_team_names_for_round(actual_games, 6)))
 
             st.caption("Predicted bracket")
             pred_df = _bracket_table_df(predicted_games)
@@ -728,6 +967,49 @@ def main() -> None:
                 brier_df = pd.DataFrame(brier_rows).sort_values("Round", key=lambda s: s.map(_round_sort_key))
                 st.caption("Per-round Brier (realized 2025 bracket games)")
                 st.dataframe(brier_df, width="stretch")
+
+
+def main() -> None:
+    st.set_page_config(page_title="MM2026 Observability", layout="wide")
+    st.title("MM2026 Modeling Overview")
+    st.caption("Datasets, modeling methods, prediction behavior, and Brier score calculation.")
+
+    default_reports = Path("artifacts") / "reports"
+    reports_dir = Path(st.sidebar.text_input("Reports directory", str(default_reports)))
+    st.sidebar.markdown("Run `make observe` after data/features/train/submit to refresh.")
+    view = st.sidebar.radio("View", ["Pipeline observability", "Bracket center"], index=0)
+
+    snapshot = _load_latest_snapshot(reports_dir)
+    if not snapshot:
+        st.error(f"No observability snapshot found in {reports_dir}.")
+        st.stop()
+
+    dataset_df = _dataset_overview_df(snapshot)
+    methods_df = _model_overview_df(snapshot)
+    submission_df = _load_submission_df(snapshot)
+    submission_enriched = _enrich_submission_rows(submission_df)
+    submission_seeded = _seeded_matchups_only(submission_enriched)
+    season_df = _season_rows(snapshot)
+    train_df = _train_rows(snapshot)
+    bracket_backtest = _load_bracket_backtest(snapshot)
+    explainability = {g: _load_explainability_payload(snapshot, g) for g in ["M", "W"]}
+    if view == "Pipeline observability":
+        _render_pipeline_view(
+            snapshot=snapshot,
+            dataset_df=dataset_df,
+            methods_df=methods_df,
+            submission_enriched=submission_enriched,
+            submission_seeded=submission_seeded,
+            season_df=season_df,
+            train_df=train_df,
+            explainability=explainability,
+        )
+    else:
+        _render_bracket_center(
+            snapshot=snapshot,
+            bracket_backtest=bracket_backtest,
+            submission_enriched=submission_enriched,
+        )
 
 
 if __name__ == "__main__":
